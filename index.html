@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Globa-Go - Single File App</title>
+
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <style>
+    body { font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; }
+    .map-full { width:100%; height:72vh; border-radius: 0.5rem; overflow:hidden; }
+    .floating-card { position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%); width: 92%; max-width:420px; z-index: 40; }
+    @media(min-width:1024px){ .floating-card { left: auto; right: 24px; transform: none; } }
+  </style>
+</head>
+<body class="bg-white">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useRef } = React;
+
+    // ==== CONFIG ====
+    const GOOGLE_MAPS_API_KEY = "YOUR_GOOGLE_MAPS_API_KEY"; // <-- replace with real key
+
+    // ==== Utils / Hook (useShipment) ====
+    function useShipment(initial = {}) {
+      const [shipment, setShipment] = useState({
+        transportMode: 'truck',
+        vehicleDetails: { number: 'GG-2026-001', driver: 'John Doe' },
+        isPaused: false,
+        currentLocation: null,
+        whatsappLink: '',
+        status: 'Pending',
+        startTime: null,
+        endTime: null,
+        packageImages: [],
+        progress: 0,
+        ...initial
+      });
+
+      // parse Google Maps URL for @lat,lng or ?q=lat,lng
+      function parseGoogleLink(url) {
+        if (!url) return null;
+        const atMatch = url.match(/@(-?\\d+\\.\\d+),(-?\\d+\\.\\d+)/);
+        if (atMatch) return { latitude: parseFloat(atMatch[1]), longitude: parseFloat(atMatch[2]) };
+        const qMatch = url.match(/[?&]q=(-?\\d+\\.\\d+),(-?\\d+\\.\\d+)/);
+        if (qMatch) return { latitude: parseFloat(qMatch[1]), longitude: parseFloat(qMatch[2]) };
+        return null;
+      }
+
+      function calculateVehicleProgress(startTime, endTime, now = Date.now()) {
+        if (!startTime || !endTime) return 0;
+        const s = new Date(startTime).getTime();
+        const e = new Date(endTime).getTime();
+        const c = new Date(now).getTime();
+        if (c <= s) return 0;
+        if (c >= e) return 100;
+        return Math.round(((c - s) / (e - s)) * 100);
+      }
+
+      // internal timer to update progress when Active and not paused
+      useEffect(() => {
+        let t;
+        function tick() {
+          if (shipment.status === 'Active' && !shipment.isPaused && shipment.startTime && shipment.endTime) {
+            setShipment(prev => ({ ...prev, progress: calculateVehicleProgress(prev.startTime, prev.endTime) }));
+          }
+        }
+        if (shipment.status === 'Active' && !shipment.isPaused) {
+          tick();
+          t = setInterval(tick, 1000);
+        }
+        return () => clearInterval(t);
+      }, [shipment.status, shipment.isPaused, shipment.startTime, shipment.endTime]);
+
+      function updateShipment(patch) {
+        setShipment(prev => ({ ...prev, ...patch }));
+      }
+
+      return { shipment, setShipment, updateShipment, parseGoogleLink, calculateVehicleProgress };
+    }
+
+    // ==== Google Maps Loader ====
+    function loadGoogleMaps(apiKey) {
+      return new Promise((resolve, reject) => {
+        if (!apiKey) { reject(new Error('Missing API key')); return; }
+        if (window.google && window.google.maps) return resolve(window.google.maps);
+        const id = 'gmap-api';
+        if (document.getElementById(id)) {
+          const interval = setInterval(() => { if (window.google && window.google.maps) { clearInterval(interval); resolve(window.google.maps); } }, 200);
+          return;
+        }
+        const script = document.createElement('script');
+        script.id = id;
+        script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&libraries=places`;
+        script.async = true;
+        script.onload = () => resolve(window.google.maps);
+        script.onerror = (e) => reject(e);
+        document.head.appendChild(script);
+      });
+    }
+
+    // ==== Map Component (vanilla google maps) ====
+    function MapLive({ center, markerPosition }) {
+      const mapRef = useRef(null);
+      const containerRef = useRef(null);
+      const markerRef = useRef(null);
+
+      useEffect(() => {
+        let mounted = true;
+        loadGoogleMaps(GOOGLE_MAPS_API_KEY).then((maps) => {
+          if (!mounted) return;
+          mapRef.current = new maps.Map(containerRef.current, {
+            center: center || { lat: 28.7041, lng: 77.1025 },
+            zoom: 12,
+            disableDefaultUI: false,
+          });
+          markerRef.current = new maps.Marker({ map: mapRef.current, position: center || { lat: 28.7041, lng: 77.1025 } });
+        }).catch(() => {
+          // fail gracefully - keep empty container
+        });
+        return () => { mounted = false; };
+      }, []);
+
+      useEffect(() => {
+        if (mapRef.current && markerRef.current && markerPosition) {
+          const pos = { lat: markerPosition.latitude, lng: markerPosition.longitude };
+          markerRef.current.setPosition(pos);
+          mapRef.current.panTo(pos);
+          mapRef.current.setZoom(13);
+        }
+      }, [markerPosition]);
+
+      return <div ref={containerRef} className="map-full bg-gray-200" />;
+    }
+
+    // ==== App Pages ====
+    function Home({ onNavigate }) {
+      const imgs = ['hero1.png','hero2.jfif','hero3.jpg','hero4.jpg'];
+      const [idx, setIdx] = useState(0);
+      useEffect(() => { const t = setInterval(()=> setIdx(i=> (i+1)%imgs.length),5000); return ()=>clearInterval(t); },[]);
+      const [tracking, setTracking] = useState('');
+      return (
+        <div className="min-h-screen">
+          <section className="relative h-screen overflow-hidden">
+            <div className="absolute inset-0">
+              <img src={imgs[idx]} alt="hero" className="w-full h-full object-cover" onError={(e)=>e.currentTarget.classList.add('hidden')} />
+            </div>
+            <div className="absolute inset-0 bg-black/40" />
+            <div className="relative z-10 h-full flex flex-col items-center justify-center px-4 text-center">
+              <div className="mb-8">
+                <div className="w-16 h-16 bg-white rounded-xl flex items-center justify-center mx-auto mb-4">
+                  <span className="text-[#1A365D] font-bold text-4xl">GG</span>
+                </div>
+                <h1 className="text-white text-5xl font-bold">Globa-Go</h1>
+                <p className="text-blue-100 mt-2">Global Logistics Made Simple</p>
+              </div>
+
+              <form onSubmit={(e)=>{ e.preventDefault(); if(tracking.trim()) onNavigate('track', tracking.trim()); }} className="w-full max-w-md">
+                <div className="flex items-center bg-white rounded-full p-2 shadow-lg">
+                  <input value={tracking} onChange={e=>setTracking(e.target.value)} className="flex-1 px-4 py-3 rounded-full outline-none" placeholder="Enter Tracking ID (e.g. GG-2026-001)" />
+                  <button disabled={!tracking.trim()} className="bg-blue-600 text-white px-6 py-3 rounded-full ml-3">Track</button>
+                </div>
+              </form>
+            </div>
+          </section>
+        </div>
+      );
+    }
+
+    function Track({ trackingId, shipmentState }) {
+      const { shipment, updateShipment } = shipmentState;
+      const [localShipment, setLocalShipment] = useState(null);
+
+      useEffect(() => {
+        // In real app fetch by ID; here simulate using shipment state if active else create sample
+        if (shipment && shipment.status !== 'Pending') {
+          setLocalShipment(shipment);
+        } else {
+          const now = Date.now();
+          setLocalShipment({
+            id: trackingId,
+            transportMode: 'truck',
+            packageImages: [
+              '/images/image1.jpg','/images/image2.jpg','/images/image3.jpg','/images/image4.jpg'
+            ],
+            currentLocation: { latitude: 28.7041, longitude: 77.1025 },
+            whatsappLink: shipment.whatsappLink || '',
+            estimatedArrival: '1h 42m',
+            startTime: new Date(now - 30*60*1000),
+            endTime: new Date(now + 30*60*1000),
+            status: 'Active',
+          });
+        }
+      }, [trackingId, shipment]);
+
+      // update progress from hook calculate inside updateShipment when admin changes; we also show local progress
+      const progress = localShipment ? Math.round(((Date.now() - new Date(localShipment.startTime)) / (new Date(localShipment.endTime) - new Date(localShipment.startTime))) * 100) : 0;
+
+      function openWhatsApp() {
+        const phone = (localShipment && (localShipment.whatsappLink || shipment.whatsappLink)) || '';
+        if (!phone) return alert('WhatsApp number not available');
+        const msg = encodeURIComponent(`Hi, I'm tracking shipment ${trackingId}. Please assist.`);
+        window.open(`https://wa.me/${phone.replace(/\D/g,'')}?text=${msg}`, '_blank');
+      }
+
+      return (
+        <div className="min-h-screen bg-gray-50">
+          <div className="max-w-7xl mx-auto px-4 py-6">
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="text-xl font-bold text-[#1A365D]">Tracking: {trackingId}</h2>
+              <div className="text-sm text-gray-600">Status: <strong className="ml-2 text-blue-600">{localShipment?.status || 'Unknown'}</strong></div>
+            </div>
+
+            <div className="relative">
+              <MapLive center={localShipment?.currentLocation} markerPosition={localShipment?.currentLocation} />
+
+              <div className="floating-card">
+                <div className="bg-white rounded-xl shadow-xl p-4">
+                  <div className="flex items-center justify-between mb-3">
+                    <div>
+                      <div className="text-sm text-gray-500">Vehicle</div>
+                      <div className="text-lg font-bold text-[#1A365D]">{localShipment?.transportMode?.toUpperCase() || 'TRUCK'}</div>
+                    </div>
+                    <div className="text-3xl">{localShipment?.transportMode === 'plane' ? '✈️' : localShipment?.transportMode === 'ship' ? '🚢' : '🚚'}</div>
+                  </div>
+
+                  <div className="mb-3">
+                    <div className="flex items-center justify-between text-sm text-gray-600 mb-1">
+                      <span>Journey Progress</span>
+                      <span className="font-bold text-blue-600">{Math.max(0, Math.min(100, progress))}%</span>
+                    </div>
+                    <div className="w-full bg-gray-200 h-2 rounded-full overflow-hidden">
+                      <div style={{width: `${Math.max(0, Math.min(100, progress))}%`}} className="h-2 bg-gradient-to-r from-blue-500 to-blue-600"></div>
+                    </div>
+                  </div>
+
+                  <div className="mb-3">
+                    <div className="grid grid-cols-4 gap-2">
+                      {(localShipment?.packageImages || []).slice(0,4).map((src,i)=>(
+                        <img key={i} src={src} alt={`pkg${i}`} className="w-full h-16 object-cover rounded-md border" onError={(e)=>e.currentTarget.src='https://via.placeholder.com/100'} />
+                      ))}
+                    </div>
+                  </div>
+
+                  <button onClick={openWhatsApp} className="w-full bg-green-500 text-white py-2 rounded-md font-bold">Chat with Customer Care</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    function Admin({ shipmentState }) {
+      const { shipment, updateShipment } = shipmentState;
+      const [form, setForm] = useState({
+        senderName: '',
+        receiverName: '',
+        googleMapsLink: '',
+        transportMode: shipment.transportMode || 'truck',
+        whatsappLink: shipment.whatsappLink || '',
+      });
+      const [images, setImages] = useState(shipment.packageImages || []);
+      const [isPaused, setIsPaused] = useState(shipment.isPaused || false);
+
+      function handleParseRoute() {
+        const coords = shipmentState.parseGoogleLink(form.googleMapsLink);
+        if (coords) updateShipment({ currentLocation: coords });
+      }
+
+      function handleStart() {
+        const now = new Date();
+        updateShipment({
+          status: 'Active',
+          startTime: now,
+          endTime: new Date(now.getTime() + 60*60*1000),
+          transportMode: form.transportMode,
+          whatsappLink: form.whatsappLink,
+          packageImages: images,
+        });
+        alert('Trip started');
+      }
+
+      function handlePauseToggle() {
+        setIsPaused(p => !p);
+        updateShipment({ isPaused: !isPaused, status: !isPaused ? 'Paused' : 'Active' });
+      }
+
+      function handleImageFiles(ev) {
+        const files = Array.from(ev.target.files);
+        const newImgs = files.map(f => URL.createObjectURL(f));
+        setImages(prev => [...prev, ...newImgs]);
+      }
+
+      return (
+        <div className="min-h-screen bg-gray-50 p-6">
+          <div className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div className="lg:col-span-2 space-y-4">
+              <div className="bg-white rounded-xl p-6 shadow">
+                <h3 className="font-bold text-xl mb-3">Sender / Receiver</h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <input placeholder="Sender name" value={form.senderName} onChange={e=>setForm({...form,senderName:e.target.value})} className="p-2 border rounded" />
+                  <input placeholder="Receiver name" value={form.receiverName} onChange={e=>setForm({...form,receiverName:e.target.value})} className="p-2 border rounded" />
+                  <input placeholder="WhatsApp number" value={form.whatsappLink} onChange={e=>setForm({...form,whatsappLink:e.target.value})} className="p-2 border rounded col-span-2" />
+                </div>
+              </div>
+
+              <div className="bg-white rounded-xl p-6 shadow">
+                <h3 className="font-bold text-xl mb-3">Package Images</h3>
+                <input type="file" multiple accept="image/*" onChange={handleImageFiles} />
+                <div className="grid grid-cols-3 gap-2 mt-3">
+                  {images.map((src,i)=> <img key={i} src={src} className="h-24 w-full object-cover rounded" alt="" onError={(e)=>e.currentTarget.src='https://via.placeholder.com/100'} />)}
+                </div>
+              </div>
+
+              <div className="bg-white rounded-xl p-6 shadow">
+                <h3 className="font-bold text-xl mb-3">Route / Transport</h3>
+                <div className="space-y-3">
+                  <input placeholder="Paste Google Maps URL" value={form.googleMapsLink} onChange={e=>setForm({...form,googleMapsLink:e.target.value})} className="w-full p-2 border rounded" />
+                  <div className="flex gap-2">
+                    <select value={form.transportMode} onChange={e=>setForm({...form,transportMode:e.target.value})} className="p-2 border rounded flex-1">
+                      <option value="truck">Truck</option>
+                      <option value="van">Van</option>
+                      <option value="bike">Bike</option>
+                      <option value="plane">Plane</option>
+                      <option value="ship">Ship</option>
+                    </select>
+                    <button onClick={handleParseRoute} className="bg-blue-600 text-white px-4 rounded">Parse</button>
+                  </div>
+
+                  <div className="mt-2 text-sm text-gray-600">
+                    Current Location: {shipment.currentLocation ? `${shipment.currentLocation.latitude.toFixed(4)}, ${shipment.currentLocation.longitude.toFixed(4)}` : 'Not set'}
+                  </div>
+                </div>
+              </div>
+
+              {isPaused && (
+                <div className="bg-yellow-50 rounded-xl p-6 shadow">
+                  <h3 className="font-bold text-xl mb-2">Admin Notes</h3>
+                  <textarea rows="4" className="w-full p-2 border rounded" placeholder="Notes..." onChange={()=>{}}></textarea>
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-4">
+              <div className="bg-white p-6 rounded-xl shadow">
+                <h4 className="font-bold mb-3">Trip Controls</h4>
+                <div className="space-y-2">
+                  <button onClick={handleStart} className="w-full bg-green-600 text-white py-2 rounded font-semibold">Start Trip</button>
+                  <button onClick={handlePauseToggle} className={`w-full py-2 rounded font-semibold ${isPaused ? 'bg-blue-600 text-white' : 'bg-yellow-400 text-black'}`}>{isPaused ? 'Resume' : 'Pause'}</button>
+                </div>
+                <div className="mt-4 text-sm text-gray-600">Status: <strong className="ml-2">{shipment.status}</strong></div>
+              </div>
+
+              <div className="bg-white p-6 rounded-xl shadow">
+                <h4 className="font-bold mb-2">Summary</h4>
+                <div className="text-sm text-gray-700">
+                  <div>Vehicle: {shipment.vehicleDetails.number}</div>
+                  <div>Mode: {shipment.transportMode}</div>
+                  <div>Images: {images.length}</div>
+                  <div className="mt-2">WhatsApp: <span className="font-medium">{form.whatsappLink || '—'}</span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // ==== Root App ====
+    function App() {
+      const shipmentState = useShipment({
+        transportMode: 'truck',
+        vehicleDetails: { number: 'GG-2026-001', driver: 'John Doe' },
+        isPaused: false,
+        currentLocation: null,
+        whatsappLink: '',
+        status: 'Pending',
+        startTime: null,
+        endTime: null,
+        packageImages: [],
+      });
+
+      const [route, setRoute] = useState({ page: 'home', trackingId: '' });
+      function navigate(page, id) { setRoute({ page, trackingId: id || '' }); window.scrollTo(0,0); }
+
+      return (
+        <div>
+          <header className="bg-[#1A365D] text-white sticky top-0 z-50">
+            <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
+              <div className="flex items-center gap-3 cursor-pointer" onClick={()=>navigate('home')}>
+                <div className="w-8 h-8 bg-white rounded flex items-center justify-center text-[#1A365D] font-bold">GG</div>
+                <div className="font-bold text-lg">Globa-Go</div>
+              </div>
+              <nav className="hidden md:flex gap-4 items-center">
+                <button onClick={()=>navigate('home')} className="text-blue-100">Home</button>
+                <button onClick={()=>navigate('track')} className="text-blue-100">Track</button>
+                <button onClick={()=>navigate('admin')} className="text-blue-100">Admin</button>
+              </nav>
+            </div>
+          </header>
+
+          <main>
+            {route.page === 'home' && <Home onNavigate={navigate} />}
+            {route.page === 'track' && <Track trackingId={route.trackingId || 'GG-2026-001'} shipmentState={shipmentState} />}
+            {route.page === 'admin' && <Admin shipmentState={shipmentState} />}
+          </main>
+
+          <footer className="bg-[#1A365D] text-white py-6 mt-8">
+            <div className="max-w-7xl mx-auto px-4 text-center text-sm">&copy; 2026 Globa-Go Logistics</div>
+          </footer>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
