@@ -99,7 +99,7 @@
 
     // ==== CONFIG ====
     const GOOGLE_MAPS_API_KEY = "YOUR_GOOGLE_MAPS_API_KEY"; // <-- replace with real key
-    const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyINaI5x4P3u3tGUr-lNRxYxPxH4i8QW7IeNPWU8qfLpt9xEvZlYS2WWoHmnaCzmU-_/exec';
+    const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxdIMaY3HqfZ5kZd4-5fU0M_HJ2BOy4OWu-H-ediM6Q0Itjninpc4pMrnIamesa-4ln/exec';
 
     // ==== Loading Spinner ====
     function LoadingSpinner() {
@@ -1008,14 +1008,14 @@
                 setError(null);
               } else {
                 setLocalShipment(null);
-                setError('Invalid Tracking ID. Please verify your code or contact support.');
+                setError('Invalid Tracking ID. Please contact Global-Go support.');
               }
               setLoading(false);
             })
             .catch(err => {
               setLoading(false);
               setLocalShipment(null);
-              setError('Invalid Tracking ID. Please verify your code or contact support.');
+              setError('Invalid Tracking ID. Please contact Global-Go support.');
             });
         } else {
           // No trackingId provided - start empty
@@ -1025,12 +1025,34 @@
         }
       }, [trackingId, setLoading]);
 
+      const [progressState, setProgressState] = useState(0);
+
+      useEffect(() => {
+        // Real-time physics engine - update every 10 seconds
+        if (!localShipment || localShipment.isPaused) return;
+
+        const updateProgress = () => {
+          if (localShipment && localShipment.startTime && localShipment.endTime) {
+            const now = new Date().getTime();
+            const start = new Date(localShipment.startTime).getTime();
+            const end = new Date(localShipment.endTime).getTime();
+            const calc = ((now - start) / (end - start)) * 100;
+            setProgressState(Math.max(0, Math.min(100, calc)));
+          }
+        };
+
+        updateProgress(); // Initial calculation
+        const interval = setInterval(updateProgress, 10000); // Update every 10 seconds
+
+        return () => clearInterval(interval);
+      }, [localShipment]);
+
       const checkpointData = calculateCurrentCheckpoint(
         localShipment?.startTime,
         localShipment?.endTime,
         localShipment?.checkpoints || []
       );
-      const progress = checkpointData.progress;
+      const progress = localShipment ? progressState : checkpointData.progress;
       const currentCheckpoint = checkpointData.checkpoint;
       const checkpoints = localShipment?.checkpoints || [];
 
@@ -1261,6 +1283,7 @@
     function Admin({ shipmentState, setLoading, onLogout }) {
       const { shipment, updateShipment } = shipmentState;
       const [form, setForm] = useState({
+        manualTrackingId: '',
         senderName: '',
         senderPhone: '',
         receiverName: '',
@@ -1327,6 +1350,12 @@
       }
 
       function handleStart() {
+        // Validate Manual Tracking ID
+        if (!form.manualTrackingId || !/^GG\d{6}$/.test(form.manualTrackingId)) {
+          alert('Invalid Tracking ID format. Please use GG followed by 6 digits (e.g., GG123456)');
+          return;
+        }
+
         const now = new Date();
         let endTime = null;
         if (form.estimatedArrival) {
@@ -1335,12 +1364,12 @@
         }
         if (!endTime) endTime = new Date(now.getTime() + 60*60*1000);
 
-        const code = generateTrackingCode();
-        setGeneratedCode(code);
+        // Format cost with $ and commas
+        const formattedCost = form.cost ? `$${parseInt(form.cost).toLocaleString()}` : '';
         
         const tripData = {
           action: 'create',
-          trackingCode: code,
+          trackingId: form.manualTrackingId,
           senderName: form.senderName,
           senderPhone: form.senderPhone,
           receiverName: form.receiverName,
@@ -1349,7 +1378,7 @@
           packageWeight: form.packageWeight,
           transportMode: form.transportMode,
           estimatedArrival: form.estimatedArrival,
-          cost: form.cost,
+          cost: formattedCost,
           whatsappLink: form.whatsappLink,
           checkpoints: form.journeyCheckpoints ? form.journeyCheckpoints.split(',').map(s=>s.trim()).filter(Boolean) : [],
           status: 'Active',
@@ -1359,6 +1388,7 @@
           statusNote: statusNote
         };
 
+        setGeneratedCode(form.manualTrackingId);
         setLoadingLocal(true);
         
         fetch(GOOGLE_SCRIPT_URL, {
@@ -1378,11 +1408,12 @@
             packageImages: packageImages,
             checkpoints: form.journeyCheckpoints ? form.journeyCheckpoints.split(',').map(s=>s.trim()).filter(Boolean) : [],
             routeScreenshot: routeScreenshotPreview,
-            trackingCode: code,
+            trackingId: form.manualTrackingId,
           });
           // Clear form fields after 2 seconds
           setTimeout(() => {
             setForm({
+              manualTrackingId: '',
               senderName: '',
               senderPhone: '',
               receiverName: '',
@@ -1425,6 +1456,22 @@
           
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="lg:col-span-2 space-y-4">
+              <div className="bg-white rounded-xl p-6 shadow border-l-4 border-blue-600">
+                <h3 className="font-bold text-xl mb-3">Tracking ID (Required)</h3>
+                <div className="mb-3">
+                  <input 
+                    placeholder="GG123456 (format: GG + 6 digits)" 
+                    value={form.manualTrackingId} 
+                    onChange={e=>setForm({...form,manualTrackingId:e.target.value.toUpperCase()})} 
+                    className={`w-full p-2 border rounded font-mono text-lg ${form.manualTrackingId && !/^GG\d{6}$/.test(form.manualTrackingId) ? 'border-red-500 bg-red-50' : ''}`}
+                  />
+                  <p className="text-xs text-gray-600 mt-2">Format: GG followed by exactly 6 digits (e.g., GG123456)</p>
+                  {form.manualTrackingId && !/^GG\d{6}$/.test(form.manualTrackingId) && (
+                    <p className="text-xs text-red-600 mt-1">❌ Invalid format. Must be GG + 6 digits.</p>
+                  )}
+                </div>
+              </div>
+
               <div className="bg-white rounded-xl p-6 shadow">
                 <h3 className="font-bold text-xl mb-3">Sender Info</h3>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
