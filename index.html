@@ -99,12 +99,25 @@
 
     // ==== CONFIG ====
     const GOOGLE_MAPS_API_KEY = "YOUR_GOOGLE_MAPS_API_KEY"; // <-- replace with real key
+    const GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyINaI5x4P3u3tGUr-lNRxYxPxH4i8QW7IeNPWU8qfLpt9xEvZlYS2WWoHmnaCzmU-_/exec';
+
+    // ==== Loading Spinner ====
+    function LoadingSpinner() {
+      return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
+          <div className="bg-white rounded-lg p-8 flex flex-col items-center gap-4">
+            <div className="w-12 h-12 border-4 border-gray-200 border-t-[#1A365D] rounded-full animate-spin"></div>
+            <p className="text-gray-700 font-semibold">Loading...</p>
+          </div>
+        </div>
+      );
+    }
 
     // ==== Utils / Hook (useShipment) ====
     function useShipment(initial = {}) {
       const [shipment, setShipment] = useState({
         transportMode: 'truck',
-        vehicleDetails: { number: 'GG-2026-001', driver: 'John Doe' },
+         vehicleDetails: { number: '', driver: '' },
         isPaused: false,
         currentLocation: null,
         whatsappLink: '+1(336)459-6552',
@@ -297,6 +310,30 @@
       return [ref, visible];
     }
 
+    // ==== Checkpoint Math Utility ====
+    function calculateCurrentCheckpoint(startTime, endTime, checkpointsList) {
+      if (!startTime || !endTime || !checkpointsList || checkpointsList.length === 0) {
+        return { checkpoint: 'Location unknown', progress: 0, index: 0 };
+      }
+
+      const now = Date.now();
+      const start = new Date(startTime).getTime();
+      const end = new Date(endTime).getTime();
+      
+      // Calculate progress percentage
+      const progressPercent = Math.min(100, Math.max(0, ((now - start) / (end - start)) * 100));
+      
+      // Calculate which checkpoint we're at
+      const checkpointIndex = Math.floor((progressPercent / 100) * checkpointsList.length);
+      const currentIndex = Math.min(checkpointsList.length - 1, Math.max(0, checkpointIndex));
+      
+      return {
+        checkpoint: checkpointsList[currentIndex] || 'Location unknown',
+        progress: Math.round(progressPercent),
+        index: currentIndex
+      };
+    }
+
     // ==== Map Component ====
     function MapLive({ center, markerPosition, routePath }) {
       const mapRef = useRef(null);
@@ -391,7 +428,7 @@
               <form onSubmit={(e)=>{ e.preventDefault(); if(tracking.trim()) onNavigate('track', tracking.trim()); }} className="w-full max-w-md animate-fade-in-up delay-400">
                 <div className="flex items-center bg-white rounded-full p-2 shadow-lg">
                   <input value={tracking} onChange={e=>setTracking(e.target.value)} className="flex-1 px-4 py-3 rounded-full outline-none transition-all duration-300 focus:shadow-xl" placeholder="Enter Tracking ID (e.g. GG-2026-001)" />
-                  <button disabled={!tracking.trim()} className="bg-blue-600 text-white px-6 py-3 rounded-full ml-3 transition-all duration-300 hover:bg-blue-700 disabled:opacity-50">Track</button>
+                  <button type="submit" disabled={!tracking.trim()} className="bg-blue-600 text-white px-6 py-3 rounded-full ml-3 transition-all duration-300 hover:bg-blue-700 disabled:opacity-50">Track</button>
                 </div>
               </form>
 
@@ -695,7 +732,7 @@
     }
 
     // ==== Help & Enquiry Page ====
-    function Help() {
+    function Help({ setLoading }) {
       const [formData, setFormData] = useState({ name: '', email: '', trackingId: '', subject: 'Shipping Quote', message: '' });
       const [showSuccess, setShowSuccess] = useState(false);
       const [expandedFAQ, setExpandedFAQ] = useState(null);
@@ -717,28 +754,39 @@
           alert('Please fill in all required fields');
           return;
         }
+        setLoading(true);
         
-        fetch('https://formspree.io/f/meeljabd', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            name: formData.name,
-            email: formData.email,
-            trackingId: formData.trackingId,
-            subject: formData.subject,
-            message: formData.message
+        // Send to Google Script
+        const googleFormData = new FormData();
+        googleFormData.append('type', 'enquiry');
+        googleFormData.append('name', formData.name);
+        googleFormData.append('email', formData.email);
+        googleFormData.append('trackingId', formData.trackingId);
+        googleFormData.append('subject', formData.subject);
+        googleFormData.append('message', formData.message);
+        
+        Promise.all([
+          fetch(GOOGLE_SCRIPT_URL, { method: 'POST', body: googleFormData }),
+          fetch('https://formspree.io/f/meeljabd', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              name: formData.name,
+              email: formData.email,
+              trackingId: formData.trackingId,
+              subject: formData.subject,
+              message: formData.message
+            })
           })
-        })
-        .then(response => {
-          if (response.ok) {
-            setShowSuccess(true);
-            setFormData({ name: '', email: '', trackingId: '', subject: 'Shipping Quote', message: '' });
-            setTimeout(() => setShowSuccess(false), 6000);
-          } else {
-            alert('Error submitting form. Please try again.');
-          }
+        ])
+        .then(responses => {
+          setLoading(false);
+          setShowSuccess(true);
+          setFormData({ name: '', email: '', trackingId: '', subject: 'Shipping Quote', message: '' });
+          setTimeout(() => setShowSuccess(false), 6000);
         })
         .catch(error => {
+          setLoading(false);
           alert('Error submitting form: ' + error.message);
         });
       }
@@ -822,9 +870,10 @@
                 </div>
                 <button 
                   onClick={handleSubmit}
-                  className="w-full bg-[#1A365D] hover:bg-[#0f2847] text-white py-3 rounded-lg font-semibold transition-all duration-300"
+                  disabled={loading}
+                  className={`w-full py-3 rounded-lg font-semibold transition-all duration-300 ${loading ? 'bg-gray-400 cursor-not-allowed' : 'bg-[#1A365D] hover:bg-[#0f2847] text-white'}`}
                 >
-                  Submit Enquiry
+                  {loading ? 'Submitting...' : 'Submit Enquiry'}
                 </button>
               </div>
             </div>
@@ -933,39 +982,57 @@
     }
 
     // ==== Track Page ====
-    function Track({ trackingId, shipmentState }) {
+    function Track({ trackingId, shipmentState, setLoading }) {
       const { shipment, updateShipment } = shipmentState;
       const [localShipment, setLocalShipment] = useState(null);
       const [showCheckpointModal, setShowCheckpointModal] = useState(false);
-      const [activeTab, setActiveTab] = useState('map');
+      const [error, setError] = useState(null);
+      const [zoom, setZoom] = useState(1);
+      const [hasAttempted, setHasAttempted] = useState(false);
+      const imageMapRef = useRef(null);
 
       useEffect(() => {
-        if (shipment && shipment.status !== 'Pending') {
-          setLocalShipment(shipment);
+        // Only fetch if a trackingId is provided
+        if (trackingId && trackingId.trim()) {
+          setHasAttempted(true);
+          setLoading(true);
+          setError(null);
+          setLocalShipment(null);
+          
+          // STRICT: Always fetch from Google Sheet - no mock data
+          fetch(`${GOOGLE_SCRIPT_URL}?id=${trackingId}`, { method: 'GET' })
+            .then(res => res.json())
+            .then(data => {
+              if (data.success && data.shipment) {
+                setLocalShipment(data.shipment);
+                setError(null);
+              } else {
+                setLocalShipment(null);
+                setError('Invalid Tracking ID. Please verify your code or contact support.');
+              }
+              setLoading(false);
+            })
+            .catch(err => {
+              setLoading(false);
+              setLocalShipment(null);
+              setError('Invalid Tracking ID. Please verify your code or contact support.');
+            });
         } else {
-          const now = Date.now();
-          setLocalShipment({
-            id: trackingId,
-            transportMode: 'truck',
-            packageImages: [
-              '/images/image1.jpg','/images/image2.jpg','/images/image3.jpg','/images/image4.jpg'
-            ],
-            currentLocation: { latitude: 28.7041, longitude: 77.1025 },
-            whatsappLink: shipment.whatsappLink || '',
-            estimatedArrival: '1h 42m',
-            startTime: new Date(now - 30*60*1000),
-            endTime: new Date(now + 30*60*1000),
-            status: 'Active',
-            checkpoints: shipment.checkpoints || [],
-            routeScreenshot: shipment.routeScreenshot || null,
-          });
+          // No trackingId provided - start empty
+          setLocalShipment(null);
+          setError(null);
+          setHasAttempted(false);
         }
-      }, [trackingId, shipment]);
+      }, [trackingId, setLoading]);
 
-      const progress = localShipment && localShipment.startTime && localShipment.endTime ? Math.round(((Date.now() - new Date(localShipment.startTime)) / (new Date(localShipment.endTime) - new Date(localShipment.startTime))) * 100) : 0;
-      const checkpoints = localShipment?.checkpoints || shipment?.checkpoints || [];
-      const checkpointIndex = checkpoints.length ? Math.min(checkpoints.length - 1, Math.max(0, Math.floor((Math.max(0, Math.min(100, progress)) / 100) * checkpoints.length))) : 0;
-      const currentCheckpoint = checkpoints.length ? checkpoints[checkpointIndex] : 'Location unknown';
+      const checkpointData = calculateCurrentCheckpoint(
+        localShipment?.startTime,
+        localShipment?.endTime,
+        localShipment?.checkpoints || []
+      );
+      const progress = checkpointData.progress;
+      const currentCheckpoint = checkpointData.checkpoint;
+      const checkpoints = localShipment?.checkpoints || [];
 
       function openWhatsApp() {
         const phone = (localShipment && (localShipment.whatsappLink || shipment.whatsappLink)) || '';
@@ -974,102 +1041,224 @@
         window.open(`https://wa.me/${phone.replace(/\D/g,'')}?text=${msg}`, '_blank');
       }
 
+      function getVehicleIcon() {
+        const mode = localShipment?.transportMode?.toLowerCase() || 'truck';
+        const iconMap = {
+          'plane': 'fa-plane',
+          'ship': 'fa-ship',
+          'train': 'fa-train',
+          'truck': 'fa-truck',
+          'van': 'fa-van-shuttle',
+          'motorcycle': 'fa-motorcycle'
+        };
+        return iconMap[mode] || 'fa-truck';
+      }
+
+      function handleWheel(e) {
+        e.preventDefault();
+        const delta = e.deltaY > 0 ? -0.1 : 0.1;
+        const newZoom = Math.max(1, Math.min(4, zoom + delta));
+        setZoom(newZoom);
+      }
+
+      useEffect(() => {
+        const mapElement = imageMapRef.current;
+        if (mapElement) {
+          mapElement.addEventListener('wheel', handleWheel, { passive: false });
+          return () => mapElement.removeEventListener('wheel', handleWheel);
+        }
+      }, [zoom]);
+
       return (
-        <div className="min-h-screen bg-gray-50">
+        <div className="min-h-screen bg-gray-900">
           <div className="max-w-7xl mx-auto px-4 py-6">
             <div className="mb-4 flex items-center justify-between">
-              <h2 className="text-xl font-bold text-[#1A365D]">Tracking: {trackingId}</h2>
-              <div className="text-sm text-gray-600">Status: <strong className="ml-2 text-blue-600">{localShipment?.status || 'Unknown'}</strong></div>
+              <h2 className="text-xl font-bold text-white">Track Your Shipment</h2>
+              <div className="text-sm text-gray-400">Status: <strong className="ml-2 text-blue-400">{localShipment?.status || 'Ready'}</strong></div>
             </div>
 
-            <div className="relative">
-              <MapLive center={localShipment?.currentLocation} markerPosition={localShipment?.currentLocation} routePath={localShipment?.routePath || shipment?.routePath} />
+            {/* Error Message - Red Banner for Invalid ID */}
+            {error && (
+              <div className="mb-6 p-4 bg-red-100 border-l-4 border-red-600 rounded-lg shadow-lg">
+                <p className="text-red-800 font-bold text-lg">❌ {error}</p>
+                <p className="text-red-700 text-sm mt-2">Please go back to the home page and enter a valid tracking code.</p>
+              </div>
+            )}
 
-              <div className="floating-card">
-                <div className="bg-white rounded-xl shadow-xl p-4">
-                  <div className="flex items-center justify-between mb-3">
-                    <div>
-                      <div className="text-sm text-gray-500">Vehicle</div>
-                      <div className="text-lg font-bold text-[#1A365D]">{localShipment?.transportMode?.toUpperCase() || 'TRUCK'}</div>
-                    </div>
-                    <div>
-                      <button onClick={()=>setShowCheckpointModal(true)} className="text-3xl cursor-pointer">{localShipment?.transportMode === 'plane' ? '✈️' : localShipment?.transportMode === 'ship' ? '🚢' : '🚚'}</button>
-                    </div>
+            {/* CLEAN START: Empty page if no trackingId provided */}
+            {!trackingId || !trackingId.trim() ? (
+              <div className="bg-gradient-to-b from-[#1A365D] to-[#0f2847] text-white rounded-lg p-12 text-center min-h-96 flex flex-col items-center justify-center">
+                <h1 className="text-4xl font-bold mb-4">Global-Go Tracking Portal</h1>
+                <p className="text-xl text-blue-100 mb-8">Track your shipment in real-time</p>
+                <div className="mb-6 text-6xl">📦</div>
+                <p className="text-blue-200 max-w-md mb-8">Enter your tracking ID on the home page to view live updates on your package, current location, and estimated delivery time.</p>
+                <button onClick={() => window.location.href = '/'} className="px-6 py-3 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700 transition">
+                  Go to Home
+                </button>
+              </div>
+            ) : hasAttempted && !localShipment && !error ? (
+              // Loading state
+              <div className="flex justify-center items-center py-20">
+                <div className="text-center">
+                  <div className="mb-4">
+                    <div className="w-12 h-12 border-4 border-blue-400 border-t-blue-600 rounded-full animate-spin mx-auto"></div>
                   </div>
-
-                  <div className="mb-3">
-                    <div className="flex items-center justify-between text-sm text-gray-600 mb-1">
-                      <span>Journey Progress</span>
-                      <span className="font-bold text-blue-600">{Math.max(0, Math.min(100, progress))}%</span>
-                    </div>
-                    <div className="w-full bg-gray-200 h-2 rounded-full overflow-hidden">
-                      <div style={{width: `${Math.max(0, Math.min(100, progress))}%`}} className="h-2 bg-gradient-to-r from-blue-500 to-blue-600"></div>
-                    </div>
-                  </div>
-
-                  <div className="mb-3">
-                    <div className="grid grid-cols-4 gap-2">
-                      {(localShipment?.packageImages || []).slice(0,4).map((src,i)=>(
-                        <img key={i} src={src} alt={`pkg${i}`} className="w-full h-16 object-cover rounded-md border" onError={(e)=>e.currentTarget.src='https://via.placeholder.com/100'} />
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className="mt-2">
-                    <div className="flex gap-2">
-                      <button onClick={openWhatsApp} className="flex-1 bg-green-500 text-white py-2 rounded-md font-bold">Chat with Customer Care</button>
-                      <button onClick={()=>setActiveTab('route')} className="px-3 py-2 border rounded">Route Map</button>
-                    </div>
-                  </div>
+                  <p className="text-gray-300 font-semibold">Validating your tracking ID...</p>
                 </div>
               </div>
-
-              <div className="mt-4">
-                <div className="bg-white p-4 rounded shadow">
-                  <div className="flex items-center gap-2 mb-3">
-                    <button onClick={()=>setActiveTab('map')} className={`px-3 py-1 rounded ${activeTab==='map'?'bg-[#1A365D] text-white':'bg-gray-100'}`}>Map Simulation</button>
-                    <button onClick={()=>setActiveTab('route')} className={`px-3 py-1 rounded ${activeTab==='route'?'bg-[#1A365D] text-white':'bg-gray-100'}`}>Route Map</button>
+            ) : localShipment ? (
+              // ===== SIMULATION REVEALED - Only when valid ID is confirmed =====
+              <div className="relative">
+                {/* Image Map with Zoom */}
+                <div className="relative bg-black rounded-lg overflow-hidden border border-gray-700 mb-6" style={{height: '600px'}}>
+                  <div
+                    ref={imageMapRef}
+                    className="w-full h-full bg-gray-800 absolute transition-transform"
+                    style={{
+                      backgroundImage: localShipment?.routeScreenshot ? `url(${localShipment.routeScreenshot})` : 'none',
+                      backgroundSize: 'contain',
+                      backgroundPosition: 'center',
+                      backgroundRepeat: 'no-repeat',
+                      transform: `scale(${zoom})`,
+                      transformOrigin: 'center center'
+                    }}
+                    onWheel={handleWheel}
+                  >
+                    {/* Moving Vehicle Icon - Matches Progress */}
+                    <button
+                      onClick={() => setShowCheckpointModal(true)}
+                      className="absolute top-1/2 transform -translate-y-1/2 z-10 cursor-pointer hover:scale-110 transition-transform"
+                      style={{left: `${Math.max(0, Math.min(100, progress))}%`}}
+                      title="Click to view checkpoint details"
+                    >
+                      <i className={`fas ${getVehicleIcon()} text-4xl text-blue-400 drop-shadow-lg`}></i>
+                    </button>
                   </div>
 
-                  {activeTab === 'map' && (
-                    <div>
-                      <div className="text-sm text-gray-600 mb-2">Current Checkpoint:</div>
-                      <div className="p-3 bg-gray-50 rounded mb-3">{currentCheckpoint}</div>
-                      <div className="text-sm text-gray-500">Checkpoints list:</div>
-                      <div className="mt-2 grid grid-cols-1 gap-1 text-sm">
-                        {checkpoints.map((c,i)=>(<div key={i} className="text-gray-700">{i+1}. {c}</div>))}
+                  {/* Pause Overlay - Shows if isPaused with Admin's statusNote */}
+                  {localShipment?.isPaused && (
+                    <div className="absolute inset-0 bg-black/70 flex items-center justify-center z-50 rounded-lg">
+                      <div className="bg-white rounded-xl p-8 text-center shadow-2xl max-w-sm">
+                        <h2 className="text-2xl font-bold text-red-600 mb-4">⏸️ Shipment On Hold</h2>
+                        {localShipment?.statusNote && (
+                          <p className="text-gray-700 mb-6 text-lg font-semibold">{localShipment.statusNote}</p>
+                        )}
+                        <button
+                          onClick={openWhatsApp}
+                          className="w-full bg-green-500 text-white py-3 rounded-lg font-bold hover:bg-green-600 transition"
+                        >
+                          <i className="fab fa-whatsapp mr-2"></i> Resolve via WhatsApp
+                        </button>
                       </div>
                     </div>
                   )}
 
-                  {activeTab === 'route' && (
-                    <div>
-                      {shipment.routeScreenshot ? (
-                        <img src={shipment.routeScreenshot} className="w-full h-80 object-contain rounded" alt="route" />
-                      ) : (
-                        <div className="text-sm text-gray-500">No route screenshot provided.</div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {showCheckpointModal && (
-                <div className="fixed inset-0 z-60 flex items-center justify-center bg-black/50">
-                  <div className="bg-white rounded-xl p-6 shadow max-w-md w-full text-center">
-                    <h3 className="text-lg font-bold mb-2">Current Checkpoint</h3>
-                    <div className="text-sm text-gray-700 mb-4">{currentCheckpoint}</div>
-                    <button onClick={()=>setShowCheckpointModal(false)} className="px-4 py-2 border rounded">Close</button>
+                  {/* Zoom Indicator */}
+                  <div className="absolute bottom-4 right-4 bg-black/70 text-white px-3 py-1 rounded-lg text-sm font-mono">
+                    {Math.round(zoom * 100)}%
                   </div>
                 </div>
-              )}
-            </div>
+
+                {/* Journey Progress Bar */}
+                <div className="bg-white rounded-lg p-4 mb-6 shadow-lg">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-sm font-semibold text-gray-700">Journey Progress</span>
+                    <span className="text-lg font-bold text-blue-600">{Math.max(0, Math.min(100, progress))}%</span>
+                  </div>
+                  <div className="w-full bg-gray-300 h-3 rounded-full overflow-hidden">
+                    <div
+                      style={{width: `${Math.max(0, Math.min(100, progress))}%`}}
+                      className="h-3 bg-gradient-to-r from-blue-500 to-blue-600 transition-all duration-500"
+                    ></div>
+                  </div>
+                </div>
+
+                {/* Interactive Checkpoints Grid */}
+                <div className="bg-white rounded-lg p-6 shadow-lg">
+                  <h3 className="text-lg font-bold text-gray-800 mb-4">Route Checkpoints ({checkpoints.length})</h3>
+                  <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+                    {checkpoints.map((checkpoint, idx) => {
+                      const checkpointStart = (idx / checkpoints.length) * 100;
+                      const checkpointEnd = ((idx + 1) / checkpoints.length) * 100;
+                      const isActive = progress >= checkpointStart && progress < checkpointEnd;
+                      const isCompleted = progress >= checkpointEnd;
+                      
+                      return (
+                        <div
+                          key={idx}
+                          className={`p-3 rounded-lg font-semibold text-sm text-center cursor-pointer transition-all ${
+                            isActive
+                              ? 'bg-blue-600 text-white shadow-lg scale-105 border-2 border-blue-800'
+                              : isCompleted
+                              ? 'bg-green-100 text-green-800 border border-green-300'
+                              : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                          }`}
+                          onClick={() => setShowCheckpointModal(true)}
+                        >
+                          <div className="text-xl mb-1">{idx + 1}</div>
+                          <div className="text-xs line-clamp-2">{checkpoint}</div>
+                          {isCompleted && <div className="text-xs mt-1">✓</div>}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Shipment Details Card */}
+                <div className="mt-6 bg-white rounded-lg p-6 shadow-lg">
+                  <div className="grid grid-cols-2 gap-4 mb-4">
+                    <div>
+                      <div className="text-sm text-gray-600 font-medium">Tracking ID</div>
+                      <div className="text-lg font-bold text-gray-800">{localShipment?.id || trackingId}</div>
+                    </div>
+                    <div>
+                      <div className="text-sm text-gray-600 font-medium">Vehicle Type</div>
+                      <div className="text-lg font-bold text-gray-800 capitalize">{localShipment?.transportMode || 'Truck'}</div>
+                    </div>
+                    <div>
+                      <div className="text-sm text-gray-600 font-medium">Current Checkpoint</div>
+                      <div className="text-lg font-bold text-blue-600">{currentCheckpoint.split('.')[0] || 'Starting...'}</div>
+                    </div>
+                    <div>
+                      <div className="text-sm text-gray-600 font-medium">Status</div>
+                      <div className={`text-lg font-bold ${localShipment?.isPaused ? 'text-red-600' : 'text-green-600'}`}>
+                        {localShipment?.isPaused ? 'On Hold' : 'In Transit'}
+                      </div>
+                    </div>
+                  </div>
+                  <button
+                    onClick={openWhatsApp}
+                    className="w-full bg-green-500 text-white py-2 rounded-lg font-bold hover:bg-green-600 transition"
+                  >
+                    <i className="fab fa-whatsapp mr-2"></i> Chat with Support
+                  </button>
+                </div>
+              </div>
+            ) : null}
+
+            {/* Checkpoint Details Modal - Shows current location and status */}
+            {showCheckpointModal && localShipment && (
+              <div className="fixed inset-0 z-60 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+                <div className="bg-white rounded-xl p-8 shadow-2xl max-w-md w-full text-center animate-bounce-in">
+                  <div className="text-5xl mb-4">{localShipment?.transportMode === 'plane' ? '✈️' : localShipment?.transportMode === 'ship' ? '🚢' : localShipment?.transportMode === 'train' ? '🚂' : localShipment?.transportMode === 'motorcycle' ? '🏍️' : '🚚'}</div>
+                  <h3 className="text-2xl font-bold mb-2 text-gray-800">Status: In Transit</h3>
+                  <div className="text-lg text-gray-700 mb-6 bg-blue-50 p-4 rounded-lg">
+                    <strong>Current Location:</strong>
+                    <div className="text-blue-600 font-semibold mt-2">{currentCheckpoint}</div>
+                  </div>
+                  <div className="text-sm text-gray-600 mb-6">Journey Progress: <strong className="text-blue-600 text-lg">{Math.max(0, Math.min(100, progress))}%</strong></div>
+                  <button onClick={() => setShowCheckpointModal(false)} className="w-full px-4 py-3 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700 transition">
+                    Close
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       );
     }
 
-    function Admin({ shipmentState }) {
+    function Admin({ shipmentState, setLoading, onLogout }) {
       const { shipment, updateShipment } = shipmentState;
       const [form, setForm] = useState({
         senderName: '',
@@ -1088,6 +1277,7 @@
       const [packageImages, setPackageImages] = useState(shipment.packageImages || []);
       const [routeScreenshotPreview, setRouteScreenshotPreview] = useState(shipment.routeScreenshot || null);
       const [isPaused, setIsPaused] = useState(shipment.isPaused || false);
+      const [statusNote, setStatusNote] = useState(shipment.statusNote || '');
       const [showSuccess, setShowSuccess] = useState(false);
       const [generatedCode, setGeneratedCode] = useState('');
 
@@ -1133,29 +1323,93 @@
 
         const code = generateTrackingCode();
         setGeneratedCode(code);
-        setShowSuccess(true);
-
-        updateShipment({
-          status: 'Active',
-          startTime: now,
-          endTime: endTime,
-          transportMode: form.transportMode,
-          whatsappLink: form.whatsappLink,
-          packageImages: packageImages,
-          checkpoints: form.journeyCheckpoints ? form.journeyCheckpoints.split(',').map(s=>s.trim()).filter(Boolean) : [],
-          routeScreenshot: routeScreenshotPreview,
+        
+        const tripData = {
+          action: 'create',
           trackingCode: code,
+          senderName: form.senderName,
+          senderPhone: form.senderPhone,
+          receiverName: form.receiverName,
+          receiverAddress: form.receiverAddress,
+          packageName: form.packageName,
+          packageWeight: form.packageWeight,
+          transportMode: form.transportMode,
+          estimatedArrival: form.estimatedArrival,
+          cost: form.cost,
+          whatsappLink: form.whatsappLink,
+          checkpoints: form.journeyCheckpoints ? form.journeyCheckpoints.split(',').map(s=>s.trim()).filter(Boolean) : [],
+          status: 'Active',
+          startTime: now.toISOString(),
+          endTime: endTime.toISOString(),
+          isPaused: isPaused,
+          statusNote: statusNote
+        };
+
+        setLoading(true);
+        
+        fetch(GOOGLE_SCRIPT_URL, {
+          method: 'POST',
+          body: new FormData(Object.entries(tripData).reduce((fd, [k, v]) => { fd.append(k, typeof v === 'object' ? JSON.stringify(v) : v); return fd; }, new FormData()))
+        })
+        .then(res => res.text())
+        .then(data => {
+          setShowSuccess(true);
+          setLoading(false);
+          updateShipment({
+            status: 'Active',
+            startTime: now,
+            endTime: endTime,
+            transportMode: form.transportMode,
+            whatsappLink: form.whatsappLink,
+            packageImages: packageImages,
+            checkpoints: form.journeyCheckpoints ? form.journeyCheckpoints.split(',').map(s=>s.trim()).filter(Boolean) : [],
+            routeScreenshot: routeScreenshotPreview,
+            trackingCode: code,
+          });
+          // Clear form fields after 2 seconds
+          setTimeout(() => {
+            setForm({
+              senderName: '',
+              senderPhone: '',
+              receiverName: '',
+              receiverAddress: '',
+              packageName: '',
+              packageWeight: '',
+              transportMode: 'truck',
+              estimatedArrival: '',
+              cost: '',
+              whatsappLink: shipment.whatsappLink || '',
+              journeyCheckpoints: '',
+            });
+            setPackageImages([]);
+            setRouteScreenshotPreview(null);
+            setShowSuccess(false);
+          }, 2000);
+        })
+        .catch(err => {
+          setLoading(false);
+          alert('Error starting trip: ' + err.message);
         });
       }
 
       function handlePauseToggle() {
         setIsPaused(p => !p);
-        updateShipment({ isPaused: !isPaused, status: !isPaused ? 'Paused' : 'Active' });
+        updateShipment({ 
+          isPaused: !isPaused, 
+          status: !isPaused ? 'Paused' : 'Active',
+          statusNote: statusNote
+        });
       }
 
       return (
         <div className="min-h-screen bg-gray-50 p-6">
-          <div className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <div className="max-w-7xl mx-auto">
+            <div className="flex items-center justify-between mb-8">
+              <h1 className="text-3xl font-bold text-[#1A365D]">Admin Dashboard</h1>
+              <button onClick={onLogout} className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg font-semibold">Logout</button>
+            </div>
+          
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="lg:col-span-2 space-y-4">
               <div className="bg-white rounded-xl p-6 shadow">
                 <h3 className="font-bold text-xl mb-3">Sender Info</h3>
@@ -1219,7 +1473,24 @@
                   </div>
 
                   <div className="flex gap-2 mt-3">
-                    <button onClick={handleStart} className="bg-[#1A365D] hover:bg-[#0f2847] text-white px-4 rounded font-semibold">Start Trip</button>
+                    <button onClick={handleStart} disabled={loading} className={`py-2 px-4 rounded font-semibold ${loading ? 'bg-gray-400 cursor-not-allowed' : 'bg-[#1A365D] hover:bg-[#0f2847] text-white'}`}>
+
+                  {/* Pause Reason / Status Note Section */}
+                  {isPaused && (
+                    <div className="mt-4 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
+                      <h4 className="font-bold text-yellow-800 mb-2">⏸️ Pause Reason</h4>
+                      <textarea 
+                        placeholder="Enter reason for pausing shipment (e.g., 'Customs clearance required', 'Weather delay', etc.)"
+                        value={statusNote}
+                        onChange={e => setStatusNote(e.target.value)}
+                        className="w-full p-2 border border-yellow-300 rounded text-sm"
+                        rows="3"
+                      />
+                      <p className="text-xs text-yellow-700 mt-2">This message will be shown to the customer when they track the shipment.</p>
+                    </div>
+                  )}
+                      {loading ? 'Starting Trip...' : 'Start Trip'}
+                    </button>
                     <button onClick={handlePauseToggle} className={`py-2 px-4 rounded font-semibold ${isPaused ? 'bg-blue-600 text-white' : 'bg-yellow-400 text-black'}`}>{isPaused ? 'Resume' : 'Pause'}</button>
                   </div>
                 </div>
@@ -1253,16 +1524,17 @@
             </div>
           )}
         </div>
+        </div>
       );
     }
 
     // ==== SignIn Page ====
     function SignIn({ onNavigate }) {
-      const [form, setForm] = useState({ email: '', password: '' });
+      const [form, setForm] = useState({ username: '', password: '' });
       const [showError, setShowError] = useState(false);
 
       function handleSignIn() {
-        if (form.email.toLowerCase() === 'admin' && form.password === '123') {
+         if (form.username.toLowerCase() === 'admin' && form.password === '123') {
           onNavigate('admin');
         } else {
           setShowError(true);
@@ -1286,12 +1558,12 @@
 
             <div className="space-y-4">
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Email Address</label>
+                 <label className="block text-sm font-medium text-gray-700 mb-1">Username</label>
                 <input
-                  type="email"
-                  value={form.email}
-                  onChange={e => setForm({...form, email: e.target.value})}
-                  placeholder="you@example.com"
+                   type="text"
+                   value={form.username}
+                   onChange={e => setForm({...form, username: e.target.value})}
+                   placeholder="admin"
                   className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#1A365D]"
                 />
               </div>
@@ -1309,7 +1581,7 @@
 
               <button
                 onClick={handleSignIn}
-                disabled={!form.email || !form.password}
+                 disabled={!form.username || !form.password}
                 className="w-full bg-[#1A365D] hover:bg-[#0f2847] text-white py-2 rounded-lg font-semibold mt-6 disabled:opacity-50"
               >
                 Sign In
@@ -1523,7 +1795,7 @@
     function App() {
       const shipmentState = useShipment({
         transportMode: 'truck',
-        vehicleDetails: { number: 'GG-2026-001', driver: 'John Doe' },
+         vehicleDetails: { number: '', driver: '' },
         isPaused: false,
         currentLocation: null,
         whatsappLink: '+1(336)459-6552',
@@ -1535,17 +1807,47 @@
 
       const [route, setRoute] = useState({ page: 'home', trackingId: '' });
       const [sidebarOpen, setSidebarOpen] = useState(false);
+      const [loading, setLoading] = useState(false);
+      const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false);
+      const [copyrightClicks, setCopyrightClicks] = useState(0);
+      
+      useEffect(() => {
+        const params = new URLSearchParams(window.location.search);
+        if (params.get('page') === 'admin' && !isAdminAuthenticated) {
+          setRoute({ page: 'signin-for-admin', trackingId: '' });
+          window.history.replaceState({}, '', window.location.pathname);
+        }
+      }, []);
+      
       function navigate(page, id) { setRoute({ page, trackingId: id || '' }); setSidebarOpen(false); window.scrollTo(0,0); }
+      
+      function handleAdminLogin() {
+        setIsAdminAuthenticated(true);
+        navigate('admin');
+      }
+      
+      function handleAdminLogout() {
+        setIsAdminAuthenticated(false);
+        navigate('home');
+      }
+       
+       function handleCopyrightClick() {
+         setCopyrightClicks(c => c + 1);
+         if (copyrightClicks + 1 >= 3) {
+           navigate('signin-for-admin');
+           setCopyrightClicks(0);
+         }
+       }
 
       return (
-        <div>
-          <header className="bg-[#1A365D] text-white sticky top-0 z-50">
-            <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
-              <div className="flex items-center gap-3 cursor-pointer" onClick={()=>navigate('home')}>
+        <div className="min-h-screen flex flex-col bg-white">
+          <header className="bg-[#1A365D] text-white sticky top-0 z-40 shadow-lg">
+            <div className="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
+              <button onClick={() => navigate('home')} className="flex items-center gap-2 font-bold text-lg hover:text-sky-300">
                 <img src="logo1.jpeg" alt="Global-Go" className="w-8 h-8 object-contain rounded-full" />
-                <div className="font-bold text-lg">Global-Go</div>
-              </div>
-              <nav className="hidden md:flex gap-4 items-center">
+                Global-Go
+              </button>
+              <nav className="hidden md:flex gap-6">
                 <button onClick={()=>navigate('home')} className="text-blue-100">Home</button>
                 <button onClick={()=>navigate('about')} className="text-blue-100">About</button>
                 <button onClick={()=>navigate('track')} className="text-blue-100">Track</button>
@@ -1568,11 +1870,12 @@
           <main>
             {route.page === 'home' && <Home onNavigate={navigate} />}
             {route.page === 'about' && <About />}
-            {route.page === 'help' && <Help />}
+            {route.page === 'help' && <Help setLoading={setLoading} />}
             {route.page === 'signin' && <SignIn onNavigate={navigate} />}
             {route.page === 'signup' && <SignUp onNavigate={navigate} />}
-            {route.page === 'track' && <Track trackingId={route.trackingId || 'GG-2026-001'} shipmentState={shipmentState} />}
-            {route.page === 'admin' && <Admin shipmentState={shipmentState} />}
+            {route.page === 'track' && <Track trackingId={route.trackingId} shipmentState={shipmentState} setLoading={setLoading} />}
+            {route.page === 'signin-for-admin' && <SignIn onNavigate={handleAdminLogin} />}
+            {route.page === 'admin' && (isAdminAuthenticated ? <Admin shipmentState={shipmentState} setLoading={setLoading} onLogout={handleAdminLogout} /> : null)}
           </main>
 
           <footer className="bg-[#1A365D] text-white py-12 mt-12">
@@ -1638,7 +1941,7 @@
 
               {/* Social Links & Copyright */}
               <div className="flex flex-col md:flex-row items-center justify-between">
-                <p className="text-blue-100 text-sm">&copy; 2026 Global-Go Logistics. All rights reserved.</p>
+                 <button onClick={handleCopyrightClick} className="text-blue-100 text-sm hover:text-sky-400 transition cursor-pointer" title="Admin Login (Click 3x)">&copy; 2026 Global-Go Logistics. All rights reserved.</button>
                 <div className="flex gap-4 mt-4 md:mt-0">
                   <a href="#" className="text-blue-100 hover:text-sky-400 transition text-xl">
                     <i className="fab fa-linkedin"></i>
