@@ -3,18 +3,92 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Globa-Go - Single File App</title>
+  <title>Global-Go - Single File App</title>
 
   <script src="https://cdn.tailwindcss.com"></script>
   <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 
   <style>
     body { font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; }
     .map-full { width:100%; height:72vh; border-radius: 0.5rem; overflow:hidden; }
     .floating-card { position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%); width: 92%; max-width:420px; z-index: 40; }
     @media(min-width:1024px){ .floating-card { left: auto; right: 24px; transform: none; } }
+    
+    @keyframes slowFadeIn {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+    
+    @keyframes quickFadeInOut {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
+
+    @keyframes fadeInUp {
+      from {
+        opacity: 0;
+        transform: translateY(30px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    @keyframes fadeInScale {
+      from {
+        opacity: 0;
+        transform: scale(0.9);
+      }
+      to {
+        opacity: 1;
+        transform: scale(1);
+      }
+    }
+
+    @keyframes slideInLeft {
+      from {
+        opacity: 0;
+        transform: translateX(-30px);
+      }
+      to {
+        opacity: 1;
+        transform: translateX(0);
+      }
+    }
+
+    .hero-image {
+      animation: slowFadeIn 3s ease-in-out forwards;
+    }
+    
+    .hero-image.pulse {
+      animation: quickFadeInOut 1s ease-in-out;
+    }
+
+    .animate-fade-in-up {
+      animation: fadeInUp 0.8s ease-out forwards;
+      opacity: 0;
+    }
+
+    .animate-fade-in-scale {
+      animation: fadeInScale 0.6s ease-out forwards;
+      opacity: 0;
+    }
+
+    .animate-slide-in-left {
+      animation: slideInLeft 0.7s ease-out forwards;
+      opacity: 0;
+    }
+
+    .delay-100 { animation-delay: 0.1s; }
+    .delay-200 { animation-delay: 0.2s; }
+    .delay-300 { animation-delay: 0.3s; }
+    .delay-400 { animation-delay: 0.4s; }
+    .delay-500 { animation-delay: 0.5s; }
+    .delay-600 { animation-delay: 0.6s; }
   </style>
 </head>
 <body class="bg-white">
@@ -39,17 +113,71 @@
         endTime: null,
         packageImages: [],
         progress: 0,
+        routePath: [],
+        startPoint: null,
+        endPoint: null,
+        checkpoints: [],
+        routeScreenshot: null,
+        trackingCode: null,
         ...initial
       });
 
-      // parse Google Maps URL for @lat,lng or ?q=lat,lng
+      // parse Google Maps Directions URL for start and end coordinates
       function parseGoogleLink(url) {
         if (!url) return null;
-        const atMatch = url.match(/@(-?\\d+\\.\\d+),(-?\\d+\\.\\d+)/);
+
+        // Extract start and end points from directions URL
+        // Format: https://www.google.com/maps/dir/28.7041,77.1025/28.6139,77.2090 or with place names
+        const dirMatch = url.match(/maps\/dir\/([^/]+)\/([^/?]+)/);
+        if (dirMatch) {
+          const startStr = dirMatch[1];
+          const endStr = dirMatch[2];
+
+          const parseCoord = (str) => {
+            const coordMatch = str.match(/(-?\d+\.\d+),(-?\d+\.\d+)/);
+            if (coordMatch) {
+              return { latitude: parseFloat(coordMatch[1]), longitude: parseFloat(coordMatch[2]) };
+            }
+            return null;
+          };
+
+          const start = parseCoord(startStr);
+          const end = parseCoord(endStr);
+
+          if (start && end) {
+            return { start, end, startStr, endStr };
+          }
+        }
+
+        // Fallback: try single coordinate extraction
+        const atMatch = url.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
         if (atMatch) return { latitude: parseFloat(atMatch[1]), longitude: parseFloat(atMatch[2]) };
-        const qMatch = url.match(/[?&]q=(-?\\d+\\.\\d+),(-?\\d+\\.\\d+)/);
+        const qMatch = url.match(/[?&]q=(-?\d+\.\d+),(-?\d+\.\d+)/);
         if (qMatch) return { latitude: parseFloat(qMatch[1]), longitude: parseFloat(qMatch[2]) };
         return null;
+      }
+      
+      // Fetch route path from Google Directions Service
+      function fetchRoutePath(start, end) {
+        loadGoogleMaps(GOOGLE_MAPS_API_KEY).then((maps) => {
+          const service = new maps.DirectionsService();
+          service.route(
+            {
+              origin: { lat: start.latitude, lng: start.longitude },
+              destination: { lat: end.latitude, lng: end.longitude },
+              travelMode: maps.TravelMode.DRIVING,
+            },
+            (result, status) => {
+              if (status === maps.DirectionsStatus.OK && result.routes && result.routes[0]) {
+                const points = result.routes[0].overview_path.map(p => ({
+                  latitude: p.lat(),
+                  longitude: p.lng(),
+                }));
+                setShipment(prev => ({ ...prev, routePath: points }));
+              }
+            }
+          );
+        }).catch(() => {});
       }
 
       function calculateVehicleProgress(startTime, endTime, now = Date.now()) {
@@ -61,13 +189,24 @@
         if (c >= e) return 100;
         return Math.round(((c - s) / (e - s)) * 100);
       }
+      
+      function calculateMarkerPositionOnRoute(progress, routePath) {
+        if (!routePath || routePath.length === 0) return null;
+        const progressDecimal = Math.max(0, Math.min(100, progress)) / 100;
+        const index = Math.floor(progressDecimal * (routePath.length - 1));
+        return routePath[index];
+      }
 
       // internal timer to update progress when Active and not paused
       useEffect(() => {
         let t;
         function tick() {
           if (shipment.status === 'Active' && !shipment.isPaused && shipment.startTime && shipment.endTime) {
-            setShipment(prev => ({ ...prev, progress: calculateVehicleProgress(prev.startTime, prev.endTime) }));
+            const progress = calculateVehicleProgress(shipment.startTime, shipment.endTime);
+            const newLocation = shipment.routePath && shipment.routePath.length > 0 
+              ? calculateMarkerPositionOnRoute(progress, shipment.routePath)
+              : shipment.currentLocation;
+            setShipment(prev => ({ ...prev, progress, currentLocation: newLocation || prev.currentLocation }));
           }
         }
         if (shipment.status === 'Active' && !shipment.isPaused) {
@@ -75,13 +214,20 @@
           t = setInterval(tick, 1000);
         }
         return () => clearInterval(t);
-      }, [shipment.status, shipment.isPaused, shipment.startTime, shipment.endTime]);
+      }, [shipment.status, shipment.isPaused, shipment.startTime, shipment.endTime, shipment.routePath]);
 
       function updateShipment(patch) {
-        setShipment(prev => ({ ...prev, ...patch }));
+        setShipment(prev => {
+          const updated = { ...prev, ...patch };
+          // Fetch route if start and end points are provided
+          if (patch.startPoint && patch.endPoint) {
+            setTimeout(() => fetchRoutePath(patch.startPoint, patch.endPoint), 100);
+          }
+          return updated;
+        });
       }
 
-      return { shipment, setShipment, updateShipment, parseGoogleLink, calculateVehicleProgress };
+      return { shipment, setShipment, updateShipment, parseGoogleLink, calculateVehicleProgress, calculateMarkerPositionOnRoute, fetchRoutePath };
     }
 
     // ==== Google Maps Loader ====
@@ -104,27 +250,48 @@
       });
     }
 
-    // ==== Map Component (vanilla google maps) ====
-    function MapLive({ center, markerPosition }) {
+    // ==== Map Component ====
+    function MapLive({ center, markerPosition, routePath }) {
       const mapRef = useRef(null);
       const containerRef = useRef(null);
       const markerRef = useRef(null);
+      const polylineRef = useRef(null);
+      const mapsRef = useRef(null);
 
       useEffect(() => {
         let mounted = true;
         loadGoogleMaps(GOOGLE_MAPS_API_KEY).then((maps) => {
           if (!mounted) return;
+          mapsRef.current = maps;
           mapRef.current = new maps.Map(containerRef.current, {
             center: center || { lat: 28.7041, lng: 77.1025 },
             zoom: 12,
             disableDefaultUI: false,
           });
           markerRef.current = new maps.Marker({ map: mapRef.current, position: center || { lat: 28.7041, lng: 77.1025 } });
-        }).catch(() => {
-          // fail gracefully - keep empty container
-        });
+        }).catch(() => {});
         return () => { mounted = false; };
       }, []);
+
+      useEffect(() => {
+        if (mapRef.current && routePath && routePath.length > 0 && mapsRef.current) {
+          const path = routePath.map(p => ({ lat: p.latitude, lng: p.longitude }));
+          if (polylineRef.current) polylineRef.current.setMap(null);
+          polylineRef.current = new mapsRef.current.Polyline({
+            path: path,
+            geodesic: true,
+            strokeColor: '#2563eb',
+            strokeOpacity: 0.8,
+            strokeWeight: 4,
+            map: mapRef.current,
+          });
+          if (path.length > 0) {
+            const bounds = new mapsRef.current.LatLngBounds();
+            path.forEach(p => bounds.extend(p));
+            mapRef.current.fitBounds(bounds);
+          }
+        }
+      }, [routePath]);
 
       useEffect(() => {
         if (mapRef.current && markerRef.current && markerPosition) {
@@ -138,46 +305,163 @@
       return <div ref={containerRef} className="map-full bg-gray-200" />;
     }
 
-    // ==== App Pages ====
+    // ==== Home Page ====
     function Home({ onNavigate }) {
-      const imgs = ['hero1.png','hero2.jfif','hero3.jpg','hero4.jpg'];
+      const imgs = ['hero1.png'];
       const [idx, setIdx] = useState(0);
-      useEffect(() => { const t = setInterval(()=> setIdx(i=> (i+1)%imgs.length),5000); return ()=>clearInterval(t); },[]);
+      const [isPulsing, setIsPulsing] = useState(false);
+      
+      useEffect(() => { 
+        const t = setInterval(()=> setIdx(i=> (i+1)%imgs.length),5000); 
+        return ()=>clearInterval(t); 
+      },[]);
+      
+      useEffect(() => {
+        const pulseTimer = setInterval(() => {
+          setIsPulsing(true);
+          setTimeout(() => setIsPulsing(false), 1000);
+        }, 60000);
+        return () => clearInterval(pulseTimer);
+      }, []);
+      
       const [tracking, setTracking] = useState('');
       return (
         <div className="min-h-screen">
           <section className="relative h-screen overflow-hidden">
             <div className="absolute inset-0">
-              <img src={imgs[idx]} alt="hero" className="w-full h-full object-cover" onError={(e)=>e.currentTarget.classList.add('hidden')} />
+              <img src={imgs[idx]} alt="hero" className={`w-full h-full object-cover hero-image ${isPulsing ? 'pulse' : ''}`} onError={(e)=>e.currentTarget.classList.add('hidden')} />
             </div>
             <div className="absolute inset-0 bg-black/40" />
             <div className="relative z-10 h-full flex flex-col items-center justify-center px-4 text-center">
-              <div className="mb-8">
-                <div className="w-16 h-16 bg-white rounded-xl flex items-center justify-center mx-auto mb-4">
-                  <span className="text-[#1A365D] font-bold text-4xl">GG</span>
+              <div className="mb-8 animate-fade-in-scale delay-100">
+                <div className="w-16 h-16 bg-white rounded-full flex items-center justify-center mx-auto mb-4">
+                  <img src="logo1.jpeg" alt="Global-Go" className="w-full h-full object-contain rounded-full" />
                 </div>
-                <h1 className="text-white text-5xl font-bold">Globa-Go</h1>
-                <p className="text-blue-100 mt-2">Global Logistics Made Simple</p>
+                <h1 className="text-white text-5xl font-bold animate-fade-in-up delay-200">Global-Go</h1>
+                <p className="text-blue-100 mt-2 animate-fade-in-up delay-300">Global Logistics Made Simple</p>
               </div>
 
-              <form onSubmit={(e)=>{ e.preventDefault(); if(tracking.trim()) onNavigate('track', tracking.trim()); }} className="w-full max-w-md">
+              <form onSubmit={(e)=>{ e.preventDefault(); if(tracking.trim()) onNavigate('track', tracking.trim()); }} className="w-full max-w-md animate-fade-in-up delay-400">
                 <div className="flex items-center bg-white rounded-full p-2 shadow-lg">
-                  <input value={tracking} onChange={e=>setTracking(e.target.value)} className="flex-1 px-4 py-3 rounded-full outline-none" placeholder="Enter Tracking ID (e.g. GG-2026-001)" />
-                  <button disabled={!tracking.trim()} className="bg-blue-600 text-white px-6 py-3 rounded-full ml-3">Track</button>
+                  <input value={tracking} onChange={e=>setTracking(e.target.value)} className="flex-1 px-4 py-3 rounded-full outline-none transition-all duration-300 focus:shadow-xl" placeholder="Enter Tracking ID (e.g. GG-2026-001)" />
+                  <button disabled={!tracking.trim()} className="bg-blue-600 text-white px-6 py-3 rounded-full ml-3 transition-all duration-300 hover:bg-blue-700 disabled:opacity-50">Track</button>
                 </div>
               </form>
+
+              <div className="mt-6 flex gap-3 justify-center flex-wrap">
+                <button onClick={() => onNavigate('signin')} className="px-6 py-2 bg-white text-[#1A365D] rounded-lg font-semibold hover:bg-gray-100 transition-all duration-300 animate-fade-in-up delay-500">
+                  Sign In
+                </button>
+                <button onClick={() => onNavigate('signup')} className="px-6 py-2 border-2 border-white text-white rounded-lg font-semibold hover:bg-white hover:text-[#1A365D] transition-all duration-300 animate-fade-in-up delay-600">
+                  Sign Up
+                </button>
+                <button onClick={() => onNavigate('signup')} className="px-6 py-2 bg-green-500 text-white rounded-lg font-semibold hover:bg-green-600 transition-all duration-300 animate-fade-in-up delay-600" title="Create an account to send items">
+                  📦 Send Item
+                </button>
+              </div>
+            </div>
+          </section>
+
+          {/* Services Grid Section */}
+          <section className="py-16 bg-gray-50">
+            <div className="max-w-7xl mx-auto px-4">
+              <h2 className="text-4xl font-bold text-center text-[#1A365D] mb-12 animate-fade-in-up">Our Global Logistics Solutions</h2>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+                <ServiceCard icon="fa-plane" title="Air Freight" description="Fast, reliable air cargo services connecting your goods to 50+ countries." delay="delay-100" />
+                <ServiceCard icon="fa-ship" title="Ocean Cargo" description="Navigate global seas with our secure and cost-effective ocean shipping." delay="delay-300" />
+                <ServiceCard icon="fa-truck" title="Land Transport" description="Cover every mile with our extensive fleet of 200+ vehicles." delay="delay-500" />
+              </div>
+            </div>
+          </section>
+
+          {/* Statistics Bar */}
+          <section className="bg-[#1A365D] text-white py-12">
+            <div className="max-w-7xl mx-auto px-4 grid grid-cols-1 md:grid-cols-3 gap-8 text-center">
+              <div className="animate-fade-in-up delay-100">
+                <p className="text-4xl font-bold text-sky-400">50+</p>
+                <p className="text-lg mt-2">Countries Served</p>
+              </div>
+              <div className="animate-fade-in-up delay-300">
+                <p className="text-4xl font-bold text-sky-400">1M+</p>
+                <p className="text-lg mt-2">Packages Delivered</p>
+              </div>
+              <div className="animate-fade-in-up delay-500">
+                <p className="text-4xl font-bold text-sky-400">200+</p>
+                <p className="text-lg mt-2">Fleet Vehicles</p>
+              </div>
+            </div>
+          </section>
+
+          {/* Why Choose Us Section */}
+          <section className="py-16 bg-white">
+            <div className="max-w-7xl mx-auto px-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-12 items-center">
+                <div className="animate-slide-in-left delay-100">
+                  <img src="hero2.jfif" alt="Logistics Hub" className="w-full h-96 object-cover rounded-lg shadow-lg" />
+                </div>
+                <div className="space-y-6 animate-fade-in-up delay-300">
+                  <h2 className="text-3xl font-bold text-[#1A365D]">Why Choose Global-Go?</h2>
+                  <div className="flex items-start gap-4">
+                    <i className="fas fa-clock text-sky-500 text-2xl mt-1"></i>
+                    <div>
+                      <h3 className="text-xl font-semibold text-[#1A365D]">24/7 Live Tracking</h3>
+                      <p className="text-gray-600">Monitor your shipments in real-time, every second of every day.</p>
+                    </div>
+                  </div>
+                  <div className="flex items-start gap-4">
+                    <i className="fas fa-lock text-sky-500 text-2xl mt-1"></i>
+                    <div>
+                      <h3 className="text-xl font-semibold text-[#1A365D]">Global Security</h3>
+                      <p className="text-gray-600">Your packages are secure across all our operations in Spain, China, and France.</p>
+                    </div>
+                  </div>
+                  <div className="flex items-start gap-4">
+                    <i className="fas fa-headset text-sky-500 text-2xl mt-1"></i>
+                    <div>
+                      <h3 className="text-xl font-semibold text-[#1A365D]">Localized Support</h3>
+                      <p className="text-gray-600">Dedicated support teams in every major region, speaking your language.</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
             </div>
           </section>
         </div>
       );
     }
 
+    function ServiceCard({ icon, title, description, delay }) {
+      const [isVisible, setIsVisible] = useState(false);
+      const ref = useRef(null);
+
+      useEffect(() => {
+        const observer = new IntersectionObserver(([entry]) => {
+          if (entry.isIntersecting) {
+            setIsVisible(true);
+            observer.unobserve(entry.target);
+          }
+        }, { threshold: 0.1 });
+        if (ref.current) observer.observe(ref.current);
+        return () => observer.disconnect();
+      }, []);
+
+      return (
+        <div ref={ref} className={`bg-white p-8 rounded-lg border-2 border-gray-200 hover:border-sky-500 shadow transition-all duration-300 hover:shadow-lg ${isVisible ? `animate-fade-in-up ${delay}` : 'opacity-0'}`}>
+          <i className={`fas ${icon} text-4xl text-[#1A365D] mb-4`}></i>
+          <h3 className="text-xl font-bold text-[#1A365D] mb-2">{title}</h3>
+          <p className="text-gray-600">{description}</p>
+        </div>
+      );
+    }
+
+    // ==== Track Page ====
     function Track({ trackingId, shipmentState }) {
       const { shipment, updateShipment } = shipmentState;
       const [localShipment, setLocalShipment] = useState(null);
+      const [showCheckpointModal, setShowCheckpointModal] = useState(false);
+      const [activeTab, setActiveTab] = useState('map');
 
       useEffect(() => {
-        // In real app fetch by ID; here simulate using shipment state if active else create sample
         if (shipment && shipment.status !== 'Pending') {
           setLocalShipment(shipment);
         } else {
@@ -194,12 +478,16 @@
             startTime: new Date(now - 30*60*1000),
             endTime: new Date(now + 30*60*1000),
             status: 'Active',
+            checkpoints: shipment.checkpoints || [],
+            routeScreenshot: shipment.routeScreenshot || null,
           });
         }
       }, [trackingId, shipment]);
 
-      // update progress from hook calculate inside updateShipment when admin changes; we also show local progress
-      const progress = localShipment ? Math.round(((Date.now() - new Date(localShipment.startTime)) / (new Date(localShipment.endTime) - new Date(localShipment.startTime))) * 100) : 0;
+      const progress = localShipment && localShipment.startTime && localShipment.endTime ? Math.round(((Date.now() - new Date(localShipment.startTime)) / (new Date(localShipment.endTime) - new Date(localShipment.startTime))) * 100) : 0;
+      const checkpoints = localShipment?.checkpoints || shipment?.checkpoints || [];
+      const checkpointIndex = checkpoints.length ? Math.min(checkpoints.length - 1, Math.max(0, Math.floor((Math.max(0, Math.min(100, progress)) / 100) * checkpoints.length))) : 0;
+      const currentCheckpoint = checkpoints.length ? checkpoints[checkpointIndex] : 'Location unknown';
 
       function openWhatsApp() {
         const phone = (localShipment && (localShipment.whatsappLink || shipment.whatsappLink)) || '';
@@ -217,7 +505,7 @@
             </div>
 
             <div className="relative">
-              <MapLive center={localShipment?.currentLocation} markerPosition={localShipment?.currentLocation} />
+              <MapLive center={localShipment?.currentLocation} markerPosition={localShipment?.currentLocation} routePath={localShipment?.routePath || shipment?.routePath} />
 
               <div className="floating-card">
                 <div className="bg-white rounded-xl shadow-xl p-4">
@@ -226,7 +514,9 @@
                       <div className="text-sm text-gray-500">Vehicle</div>
                       <div className="text-lg font-bold text-[#1A365D]">{localShipment?.transportMode?.toUpperCase() || 'TRUCK'}</div>
                     </div>
-                    <div className="text-3xl">{localShipment?.transportMode === 'plane' ? '✈️' : localShipment?.transportMode === 'ship' ? '🚢' : '🚚'}</div>
+                    <div>
+                      <button onClick={()=>setShowCheckpointModal(true)} className="text-3xl cursor-pointer">{localShipment?.transportMode === 'plane' ? '✈️' : localShipment?.transportMode === 'ship' ? '🚢' : '🚚'}</button>
+                    </div>
                   </div>
 
                   <div className="mb-3">
@@ -247,9 +537,54 @@
                     </div>
                   </div>
 
-                  <button onClick={openWhatsApp} className="w-full bg-green-500 text-white py-2 rounded-md font-bold">Chat with Customer Care</button>
+                  <div className="mt-2">
+                    <div className="flex gap-2">
+                      <button onClick={openWhatsApp} className="flex-1 bg-green-500 text-white py-2 rounded-md font-bold">Chat with Customer Care</button>
+                      <button onClick={()=>setActiveTab('route')} className="px-3 py-2 border rounded">Route Map</button>
+                    </div>
+                  </div>
                 </div>
               </div>
+
+              <div className="mt-4">
+                <div className="bg-white p-4 rounded shadow">
+                  <div className="flex items-center gap-2 mb-3">
+                    <button onClick={()=>setActiveTab('map')} className={`px-3 py-1 rounded ${activeTab==='map'?'bg-[#1A365D] text-white':'bg-gray-100'}`}>Map Simulation</button>
+                    <button onClick={()=>setActiveTab('route')} className={`px-3 py-1 rounded ${activeTab==='route'?'bg-[#1A365D] text-white':'bg-gray-100'}`}>Route Map</button>
+                  </div>
+
+                  {activeTab === 'map' && (
+                    <div>
+                      <div className="text-sm text-gray-600 mb-2">Current Checkpoint:</div>
+                      <div className="p-3 bg-gray-50 rounded mb-3">{currentCheckpoint}</div>
+                      <div className="text-sm text-gray-500">Checkpoints list:</div>
+                      <div className="mt-2 grid grid-cols-1 gap-1 text-sm">
+                        {checkpoints.map((c,i)=>(<div key={i} className="text-gray-700">{i+1}. {c}</div>))}
+                      </div>
+                    </div>
+                  )}
+
+                  {activeTab === 'route' && (
+                    <div>
+                      {shipment.routeScreenshot ? (
+                        <img src={shipment.routeScreenshot} className="w-full h-80 object-contain rounded" alt="route" />
+                      ) : (
+                        <div className="text-sm text-gray-500">No route screenshot provided.</div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {showCheckpointModal && (
+                <div className="fixed inset-0 z-60 flex items-center justify-center bg-black/50">
+                  <div className="bg-white rounded-xl p-6 shadow max-w-md w-full text-center">
+                    <h3 className="text-lg font-bold mb-2">Current Checkpoint</h3>
+                    <div className="text-sm text-gray-700 mb-4">{currentCheckpoint}</div>
+                    <button onClick={()=>setShowCheckpointModal(false)} className="px-4 py-2 border rounded">Close</button>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -260,30 +595,79 @@
       const { shipment, updateShipment } = shipmentState;
       const [form, setForm] = useState({
         senderName: '',
+        senderPhone: '',
         receiverName: '',
-        googleMapsLink: '',
+        receiverAddress: '',
+        packageName: '',
+        packageWeight: '',
         transportMode: shipment.transportMode || 'truck',
+        estimatedArrival: '',
+        cost: '',
         whatsappLink: shipment.whatsappLink || '',
+        journeyCheckpoints: '',
       });
-      const [images, setImages] = useState(shipment.packageImages || []);
-      const [isPaused, setIsPaused] = useState(shipment.isPaused || false);
 
-      function handleParseRoute() {
-        const coords = shipmentState.parseGoogleLink(form.googleMapsLink);
-        if (coords) updateShipment({ currentLocation: coords });
+      const [packageImages, setPackageImages] = useState(shipment.packageImages || []);
+      const [routeScreenshotPreview, setRouteScreenshotPreview] = useState(shipment.routeScreenshot || null);
+      const [isPaused, setIsPaused] = useState(shipment.isPaused || false);
+      const [showSuccess, setShowSuccess] = useState(false);
+      const [generatedCode, setGeneratedCode] = useState('');
+
+      function handlePackageFiles(ev) {
+        const files = Array.from(ev.target.files).slice(0,5);
+        const newImgs = files.map(f => URL.createObjectURL(f));
+        setPackageImages(prev => {
+          const merged = [...prev, ...newImgs].slice(0,5);
+          updateShipment({ packageImages: merged });
+          return merged;
+        });
+      }
+
+      function handleRouteScreenshot(ev) {
+        const f = ev.target.files && ev.target.files[0];
+        if (!f) return;
+        const url = URL.createObjectURL(f);
+        setRouteScreenshotPreview(url);
+        updateShipment({ routeScreenshot: url });
+      }
+
+      function handleCheckpointsChange(val) {
+        setForm(prev => ({ ...prev, journeyCheckpoints: val }));
+        const items = val.split(',').map(s => s.trim()).filter(Boolean);
+        updateShipment({ checkpoints: items });
+      }
+
+      function generateTrackingCode() {
+        const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+        let code = 'GBG-';
+        for (let i=0;i<6;i++) code += chars[Math.floor(Math.random()*chars.length)];
+        return code;
       }
 
       function handleStart() {
         const now = new Date();
+        let endTime = null;
+        if (form.estimatedArrival) {
+          const parsed = new Date(form.estimatedArrival);
+          if (!isNaN(parsed.getTime())) endTime = parsed;
+        }
+        if (!endTime) endTime = new Date(now.getTime() + 60*60*1000);
+
+        const code = generateTrackingCode();
+        setGeneratedCode(code);
+        setShowSuccess(true);
+
         updateShipment({
           status: 'Active',
           startTime: now,
-          endTime: new Date(now.getTime() + 60*60*1000),
+          endTime: endTime,
           transportMode: form.transportMode,
           whatsappLink: form.whatsappLink,
-          packageImages: images,
+          packageImages: packageImages,
+          checkpoints: form.journeyCheckpoints ? form.journeyCheckpoints.split(',').map(s=>s.trim()).filter(Boolean) : [],
+          routeScreenshot: routeScreenshotPreview,
+          trackingCode: code,
         });
-        alert('Trip started');
       }
 
       function handlePauseToggle() {
@@ -291,87 +675,372 @@
         updateShipment({ isPaused: !isPaused, status: !isPaused ? 'Paused' : 'Active' });
       }
 
-      function handleImageFiles(ev) {
-        const files = Array.from(ev.target.files);
-        const newImgs = files.map(f => URL.createObjectURL(f));
-        setImages(prev => [...prev, ...newImgs]);
-      }
-
       return (
         <div className="min-h-screen bg-gray-50 p-6">
           <div className="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="lg:col-span-2 space-y-4">
               <div className="bg-white rounded-xl p-6 shadow">
-                <h3 className="font-bold text-xl mb-3">Sender / Receiver</h3>
+                <h3 className="font-bold text-xl mb-3">Sender Info</h3>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   <input placeholder="Sender name" value={form.senderName} onChange={e=>setForm({...form,senderName:e.target.value})} className="p-2 border rounded" />
+                  <input placeholder="Sender phone" value={form.senderPhone} onChange={e=>setForm({...form,senderPhone:e.target.value})} className="p-2 border rounded" />
+                </div>
+              </div>
+
+              <div className="bg-white rounded-xl p-6 shadow">
+                <h3 className="font-bold text-xl mb-3">Receiver Info</h3>
+                <div className="grid grid-cols-1 gap-3">
                   <input placeholder="Receiver name" value={form.receiverName} onChange={e=>setForm({...form,receiverName:e.target.value})} className="p-2 border rounded" />
-                  <input placeholder="WhatsApp number" value={form.whatsappLink} onChange={e=>setForm({...form,whatsappLink:e.target.value})} className="p-2 border rounded col-span-2" />
+                  <input placeholder="Receiver address" value={form.receiverAddress} onChange={e=>setForm({...form,receiverAddress:e.target.value})} className="p-2 border rounded" />
                 </div>
               </div>
 
               <div className="bg-white rounded-xl p-6 shadow">
-                <h3 className="font-bold text-xl mb-3">Package Images</h3>
-                <input type="file" multiple accept="image/*" onChange={handleImageFiles} />
-                <div className="grid grid-cols-3 gap-2 mt-3">
-                  {images.map((src,i)=> <img key={i} src={src} className="h-24 w-full object-cover rounded" alt="" onError={(e)=>e.currentTarget.src='https://via.placeholder.com/100'} />)}
+                <h3 className="font-bold text-xl mb-3">Package Info</h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <input placeholder="Package name" value={form.packageName} onChange={e=>setForm({...form,packageName:e.target.value})} className="p-2 border rounded" />
+                  <input placeholder="Weight (kg)" value={form.packageWeight} onChange={e=>setForm({...form,packageWeight:e.target.value})} className="p-2 border rounded" />
+                </div>
+                <div className="mt-3">
+                  <div className="text-sm mb-2">Package images (3-5)</div>
+                  <input type="file" multiple accept="image/*" onChange={handlePackageFiles} />
+                  <div className="grid grid-cols-3 gap-2 mt-3">
+                    {packageImages.map((src,i)=> <img key={i} src={src} className="h-24 w-full object-cover rounded" alt="" onError={(e)=>e.currentTarget.src='https://via.placeholder.com/100'} />)}
+                  </div>
                 </div>
               </div>
 
               <div className="bg-white rounded-xl p-6 shadow">
-                <h3 className="font-bold text-xl mb-3">Route / Transport</h3>
+                <h3 className="font-bold text-xl mb-3">Logistics & Route Engine</h3>
                 <div className="space-y-3">
-                  <input placeholder="Paste Google Maps URL" value={form.googleMapsLink} onChange={e=>setForm({...form,googleMapsLink:e.target.value})} className="w-full p-2 border rounded" />
-                  <div className="flex gap-2">
-                    <select value={form.transportMode} onChange={e=>setForm({...form,transportMode:e.target.value})} className="p-2 border rounded flex-1">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <select value={form.transportMode} onChange={e=>setForm({...form,transportMode:e.target.value})} className="p-2 border rounded md:col-span-1">
                       <option value="truck">Truck</option>
                       <option value="van">Van</option>
                       <option value="bike">Bike</option>
                       <option value="plane">Plane</option>
                       <option value="ship">Ship</option>
                     </select>
-                    <button onClick={handleParseRoute} className="bg-blue-600 text-white px-4 rounded">Parse</button>
+                    <input type="datetime-local" value={form.estimatedArrival} onChange={e=>setForm({...form,estimatedArrival:e.target.value})} className="p-2 border rounded" />
+                    <input placeholder="Cost" value={form.cost} onChange={e=>setForm({...form,cost:e.target.value})} className="p-2 border rounded" />
                   </div>
 
-                  <div className="mt-2 text-sm text-gray-600">
-                    Current Location: {shipment.currentLocation ? `${shipment.currentLocation.latitude.toFixed(4)}, ${shipment.currentLocation.longitude.toFixed(4)}` : 'Not set'}
+                  <div>
+                    <label className="block font-medium mb-1">Journey Checkpoints (12-15 locations, comma separated)</label>
+                    <textarea rows="4" placeholder="Checkpoint1, Checkpoint2, ..." value={form.journeyCheckpoints} onChange={e=>handleCheckpointsChange(e.target.value)} className="w-full p-2 border rounded" />
+                    <div className="text-sm text-gray-600 mt-2">Provided: {shipment.checkpoints?.length || 0} checkpoints</div>
+                    <div className="mt-2 text-sm text-gray-700">
+                      {shipment.checkpoints && shipment.checkpoints.slice(0,15).map((c,i)=>(<div key={i} className="text-sm">{i+1}. {c}</div>))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block font-medium mb-1">Route Screenshot (one image)</label>
+                    <input type="file" accept="image/*" onChange={handleRouteScreenshot} />
+                    {routeScreenshotPreview && <img src={routeScreenshotPreview} className="mt-3 w-full h-48 object-cover rounded" alt="route" />}
+                  </div>
+
+                  <div className="flex gap-2 mt-3">
+                    <button onClick={handleStart} className="bg-[#1A365D] hover:bg-[#0f2847] text-white px-4 rounded font-semibold">Start Trip</button>
+                    <button onClick={handlePauseToggle} className={`py-2 px-4 rounded font-semibold ${isPaused ? 'bg-blue-600 text-white' : 'bg-yellow-400 text-black'}`}>{isPaused ? 'Resume' : 'Pause'}</button>
                   </div>
                 </div>
               </div>
-
-              {isPaused && (
-                <div className="bg-yellow-50 rounded-xl p-6 shadow">
-                  <h3 className="font-bold text-xl mb-2">Admin Notes</h3>
-                  <textarea rows="4" className="w-full p-2 border rounded" placeholder="Notes..." onChange={()=>{}}></textarea>
-                </div>
-              )}
             </div>
 
             <div className="space-y-4">
               <div className="bg-white p-6 rounded-xl shadow">
-                <h4 className="font-bold mb-3">Trip Controls</h4>
-                <div className="space-y-2">
-                  <button onClick={handleStart} className="w-full bg-green-600 text-white py-2 rounded font-semibold">Start Trip</button>
-                  <button onClick={handlePauseToggle} className={`w-full py-2 rounded font-semibold ${isPaused ? 'bg-blue-600 text-white' : 'bg-yellow-400 text-black'}`}>{isPaused ? 'Resume' : 'Pause'}</button>
-                </div>
-                <div className="mt-4 text-sm text-gray-600">Status: <strong className="ml-2">{shipment.status}</strong></div>
-              </div>
-
-              <div className="bg-white p-6 rounded-xl shadow">
-                <h4 className="font-bold mb-2">Summary</h4>
+                <h4 className="font-bold mb-3">Trip Summary</h4>
                 <div className="text-sm text-gray-700">
                   <div>Vehicle: {shipment.vehicleDetails.number}</div>
                   <div>Mode: {shipment.transportMode}</div>
-                  <div>Images: {images.length}</div>
+                  <div>Images: {packageImages.length}</div>
                   <div className="mt-2">WhatsApp: <span className="font-medium">{form.whatsappLink || '—'}</span></div>
                 </div>
               </div>
             </div>
           </div>
+
+          {showSuccess && (
+            <div className="fixed inset-0 z-60 flex items-center justify-center bg-black/50">
+              <div className="bg-white rounded-xl p-6 shadow max-w-md w-full text-center">
+                <h3 className="text-xl font-bold mb-2">Trip Started</h3>
+                <div className="text-sm text-gray-600 mb-4">Tracking ID</div>
+                <div className="text-3xl font-mono font-bold text-[#1A365D] mb-4">{generatedCode}</div>
+                <div className="flex gap-2 justify-center">
+                  <button onClick={()=>{navigator.clipboard && navigator.clipboard.writeText(generatedCode); alert('Copied');}} className="px-4 py-2 bg-sky-500 text-white rounded">Copy</button>
+                  <button onClick={()=>setShowSuccess(false)} className="px-4 py-2 border rounded">Close</button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       );
     }
 
+    // ==== SignIn Page ====
+    function SignIn({ onNavigate }) {
+      const [form, setForm] = useState({ email: '', password: '' });
+      const [showError, setShowError] = useState(false);
+
+      function handleSignIn() {
+        if (form.email.toLowerCase() === 'admin' && form.password === '123') {
+          onNavigate('admin');
+        } else {
+          setShowError(true);
+          setTimeout(() => setShowError(false), 3000);
+        }
+      }
+
+      return (
+        <div className="min-h-screen bg-gradient-to-b from-[#1A365D] to-[#0f2847] flex items-center justify-center px-4">
+          <div className="bg-white rounded-xl shadow-2xl p-8 max-w-md w-full">
+            <div className="text-center mb-6">
+              <h1 className="text-3xl font-bold text-[#1A365D]">Sign In</h1>
+              <p className="text-gray-600 mt-2">Welcome back to Global-Go</p>
+            </div>
+
+            {showError && (
+              <div className="mb-4 p-3 bg-red-100 border border-red-400 text-red-700 rounded">
+                Account not found. Please check your credentials and try again.
+              </div>
+            )}
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Email Address</label>
+                <input
+                  type="email"
+                  value={form.email}
+                  onChange={e => setForm({...form, email: e.target.value})}
+                  placeholder="you@example.com"
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#1A365D]"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
+                <input
+                  type="password"
+                  value={form.password}
+                  onChange={e => setForm({...form, password: e.target.value})}
+                  placeholder="••••••••"
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#1A365D]"
+                />
+              </div>
+
+              <button
+                onClick={handleSignIn}
+                disabled={!form.email || !form.password}
+                className="w-full bg-[#1A365D] hover:bg-[#0f2847] text-white py-2 rounded-lg font-semibold mt-6 disabled:opacity-50"
+              >
+                Sign In
+              </button>
+            </div>
+
+            <div className="mt-6 border-t pt-6">
+              <p className="text-gray-600 text-sm mb-3 font-medium">Or continue with</p>
+              <div className="grid grid-cols-2 gap-3">
+                <button onClick={() => {}} className="flex items-center justify-center gap-2 py-2 px-3 border border-gray-300 rounded-lg hover:bg-gray-50 text-sm font-medium text-gray-700">
+                  <i className="fab fa-google"></i> Google
+                </button>
+                <button onClick={() => {}} className="flex items-center justify-center gap-2 py-2 px-3 border border-gray-300 rounded-lg hover:bg-gray-50 text-sm font-medium text-gray-700">
+                  <i className="fab fa-apple"></i> Apple
+                </button>
+                <button onClick={() => {}} className="flex items-center justify-center gap-2 py-2 px-3 border border-gray-300 rounded-lg hover:bg-gray-50 text-sm font-medium text-gray-700">
+                  <i className="fas fa-envelope"></i> Email
+                </button>
+                <button onClick={() => {}} className="flex items-center justify-center gap-2 py-2 px-3 border border-gray-300 rounded-lg hover:bg-gray-50 text-sm font-medium text-gray-700">
+                  <i className="fab fa-facebook"></i> Facebook
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-6 text-center">
+              <p className="text-gray-600">Don't have an account?</p>
+              <button onClick={() => onNavigate('signup')} className="text-[#1A365D] font-semibold hover:underline">
+                Create one here
+              </button>
+            </div>
+
+            <button onClick={() => onNavigate('home')} className="w-full mt-4 text-gray-600 hover:text-gray-800">
+              ← Back to Home
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    // ==== SignUp Page ====
+    function SignUp({ onNavigate }) {
+      const [form, setForm] = useState({
+        name: '',
+        email: '',
+        phone: '',
+        password: '',
+        confirmPassword: '',
+      });
+      const [showSuccess, setShowSuccess] = useState(false);
+      const [cooldownTime, setCooldownTime] = useState(0);
+
+      useEffect(() => {
+        let interval;
+        if (cooldownTime > 0) {
+          interval = setInterval(() => {
+            setCooldownTime(prev => {
+              if (prev <= 1) {
+                setShowSuccess(false);
+                return 0;
+              }
+              return prev - 1;
+            });
+          }, 1000);
+        }
+        return () => clearInterval(interval);
+      }, [cooldownTime]);
+
+      function handleSignUp() {
+        if (!form.name || !form.email || !form.phone || !form.password || !form.confirmPassword) {
+          alert('Please fill in all fields');
+          return;
+        }
+        if (form.password !== form.confirmPassword) {
+          alert('Passwords do not match');
+          return;
+        }
+        setShowSuccess(true);
+        setCooldownTime(300); // 5 minutes in seconds
+      }
+
+      const formatTime = (seconds) => {
+        const mins = Math.floor(seconds / 60);
+        const secs = seconds % 60;
+        return `${mins}:${secs.toString().padStart(2, '0')}`;
+      };
+
+      return (
+        <div className="min-h-screen bg-gradient-to-b from-[#1A365D] to-[#0f2847] flex items-center justify-center px-4">
+          <div className="bg-white rounded-xl shadow-2xl p-8 max-w-md w-full">
+            <div className="text-center mb-6">
+              <h1 className="text-3xl font-bold text-[#1A365D]">Create Account</h1>
+              <p className="text-gray-600 mt-2">Join Global-Go today</p>
+            </div>
+
+            {showSuccess && (
+              <div className="mb-4 p-4 bg-blue-100 border border-blue-400 rounded">
+                <h3 className="font-semibold text-blue-800 mb-2">Account Under Review</h3>
+                <p className="text-sm text-blue-700 mb-3">
+                  Please re-enter your details and try again.
+                </p>
+                <div className="text-lg font-bold text-blue-600">
+                  Available in: {formatTime(cooldownTime)}
+                </div>
+              </div>
+            )}
+
+            <div className="space-y-3">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Full Name</label>
+                <input
+                  type="text"
+                  value={form.name}
+                  onChange={e => setForm({...form, name: e.target.value})}
+                  placeholder="John Doe"
+                  disabled={cooldownTime > 0}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#1A365D] disabled:bg-gray-100"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Email Address</label>
+                <input
+                  type="email"
+                  value={form.email}
+                  onChange={e => setForm({...form, email: e.target.value})}
+                  placeholder="you@example.com"
+                  disabled={cooldownTime > 0}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#1A365D] disabled:bg-gray-100"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Phone Number</label>
+                <input
+                  type="tel"
+                  value={form.phone}
+                  onChange={e => setForm({...form, phone: e.target.value})}
+                  placeholder="+1 (555) 000-0000"
+                  disabled={cooldownTime > 0}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#1A365D] disabled:bg-gray-100"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
+                <input
+                  type="password"
+                  value={form.password}
+                  onChange={e => setForm({...form, password: e.target.value})}
+                  placeholder="••••••••"
+                  disabled={cooldownTime > 0}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#1A365D] disabled:bg-gray-100"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Confirm Password</label>
+                <input
+                  type="password"
+                  value={form.confirmPassword}
+                  onChange={e => setForm({...form, confirmPassword: e.target.value})}
+                  placeholder="••••••••"
+                  disabled={cooldownTime > 0}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#1A365D] disabled:bg-gray-100"
+                />
+              </div>
+
+              <button
+                onClick={handleSignUp}
+                disabled={cooldownTime > 0 || Object.values(form).some(v => !v)}
+                className="w-full bg-[#1A365D] hover:bg-[#0f2847] text-white py-2 rounded-lg font-semibold mt-6 disabled:opacity-50"
+              >
+                {cooldownTime > 0 ? `Try again in ${formatTime(cooldownTime)}` : 'Create Account'}
+              </button>
+            </div>
+
+            <div className="mt-6 border-t pt-6">
+              <p className="text-gray-600 text-sm mb-3 font-medium">Or sign up with</p>
+              <div className="grid grid-cols-2 gap-3">
+                <button onClick={() => {}} className="flex items-center justify-center gap-2 py-2 px-3 border border-gray-300 rounded-lg hover:bg-gray-50 text-sm font-medium text-gray-700">
+                  <i className="fab fa-google"></i> Google
+                </button>
+                <button onClick={() => {}} className="flex items-center justify-center gap-2 py-2 px-3 border border-gray-300 rounded-lg hover:bg-gray-50 text-sm font-medium text-gray-700">
+                  <i className="fab fa-apple"></i> Apple
+                </button>
+                <button onClick={() => {}} className="flex items-center justify-center gap-2 py-2 px-3 border border-gray-300 rounded-lg hover:bg-gray-50 text-sm font-medium text-gray-700">
+                  <i className="fas fa-envelope"></i> Email
+                </button>
+                <button onClick={() => {}} className="flex items-center justify-center gap-2 py-2 px-3 border border-gray-300 rounded-lg hover:bg-gray-50 text-sm font-medium text-gray-700">
+                  <i className="fab fa-facebook"></i> Facebook
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-6 text-center">
+              <p className="text-gray-600">Already have an account?</p>
+              <button onClick={() => onNavigate('signin')} className="text-[#1A365D] font-semibold hover:underline">
+                Sign in here
+              </button>
+            </div>
+
+            <button onClick={() => onNavigate('home')} className="w-full mt-4 text-gray-600 hover:text-gray-800">
+              ← Back to Home
+            </button>
+          </div>
+        </div>
+      );
+    }
+    
     // ==== Root App ====
     function App() {
       const shipmentState = useShipment({
@@ -387,32 +1056,115 @@
       });
 
       const [route, setRoute] = useState({ page: 'home', trackingId: '' });
-      function navigate(page, id) { setRoute({ page, trackingId: id || '' }); window.scrollTo(0,0); }
+      const [sidebarOpen, setSidebarOpen] = useState(false);
+      function navigate(page, id) { setRoute({ page, trackingId: id || '' }); setSidebarOpen(false); window.scrollTo(0,0); }
 
       return (
         <div>
           <header className="bg-[#1A365D] text-white sticky top-0 z-50">
             <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
               <div className="flex items-center gap-3 cursor-pointer" onClick={()=>navigate('home')}>
-                <div className="w-8 h-8 bg-white rounded flex items-center justify-center text-[#1A365D] font-bold">GG</div>
-                <div className="font-bold text-lg">Globa-Go</div>
+                <img src="logo1.jpeg" alt="Global-Go" className="w-8 h-8 object-contain rounded-full" />
+                <div className="font-bold text-lg">Global-Go</div>
               </div>
               <nav className="hidden md:flex gap-4 items-center">
                 <button onClick={()=>navigate('home')} className="text-blue-100">Home</button>
                 <button onClick={()=>navigate('track')} className="text-blue-100">Track</button>
-                <button onClick={()=>navigate('admin')} className="text-blue-100">Admin</button>
               </nav>
+              <button onClick={()=>setSidebarOpen(!sidebarOpen)} className="md:hidden text-white text-2xl">☰</button>
             </div>
+            {sidebarOpen && (
+              <div className="md:hidden bg-[#0f2847] border-t border-blue-400">
+                <div className="px-4 py-2 flex flex-col gap-2">
+                  <button onClick={()=>navigate('home')} className="text-blue-100 py-2 hover:bg-[#1A365D] px-2 rounded">Home</button>
+                  <button onClick={()=>navigate('track')} className="text-blue-100 py-2 hover:bg-[#1A365D] px-2 rounded">Track</button>
+                </div>
+              </div>
+            )}
           </header>
 
           <main>
             {route.page === 'home' && <Home onNavigate={navigate} />}
+            {route.page === 'signin' && <SignIn onNavigate={navigate} />}
+            {route.page === 'signup' && <SignUp onNavigate={navigate} />}
             {route.page === 'track' && <Track trackingId={route.trackingId || 'GG-2026-001'} shipmentState={shipmentState} />}
             {route.page === 'admin' && <Admin shipmentState={shipmentState} />}
           </main>
 
-          <footer className="bg-[#1A365D] text-white py-6 mt-8">
-            <div className="max-w-7xl mx-auto px-4 text-center text-sm">&copy; 2026 Globa-Go Logistics</div>
+          <footer className="bg-[#1A365D] text-white py-12 mt-12">
+            <div className="max-w-7xl mx-auto px-4">
+              {/* Main Footer Grid */}
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-8 mb-8">
+                {/* Column 1: About */}
+                <div>
+                  <div className="flex items-center gap-2 mb-4">
+                    <img src="logo1.jpeg" alt="Global-Go" className="w-10 h-10 object-contain rounded-full" />
+                    <h3 className="text-xl font-bold">Global-Go</h3>
+                  </div>
+                  <p className="text-blue-100 text-sm leading-relaxed">Connecting the world through reliable, fast, and secure logistics solutions since 2020. Trusted by millions worldwide.</p>
+                </div>
+
+                {/* Column 2: Quick Links */}
+                <div>
+                  <h4 className="text-lg font-bold mb-4 text-sky-400">Quick Links</h4>
+                  <ul className="space-y-2 text-blue-100 text-sm">
+                    <li><button onClick={() => window.scrollTo(0, 0)} className="hover:text-white transition">Home</button></li>
+                    <li><button className="hover:text-white transition">Track Shipment</button></li>
+                    <li><button className="hover:text-white transition">About Us</button></li>
+                    <li><button className="hover:text-white transition">Careers</button></li>
+                  </ul>
+                </div>
+
+                {/* Column 3: Our Services */}
+                <div>
+                  <h4 className="text-lg font-bold mb-4 text-sky-400">Our Services</h4>
+                  <ul className="space-y-2 text-blue-100 text-sm">
+                    <li className="hover:text-white transition cursor-pointer">✈️ Air Freight</li>
+                    <li className="hover:text-white transition cursor-pointer">🚢 Ocean Cargo</li>
+                    <li className="hover:text-white transition cursor-pointer">🚚 Road Transport</li>
+                    <li className="hover:text-white transition cursor-pointer">📦 Warehousing</li>
+                  </ul>
+                </div>
+
+                {/* Column 4: Support */}
+                <div>
+                  <h4 className="text-lg font-bold mb-4 text-sky-400">Support</h4>
+                  <div className="space-y-3 text-sm">
+                    <div className="text-blue-100">
+                      <p className="font-semibold">📧 Email</p>
+                      <a href="mailto:support@global-go.com" className="hover:text-white transition">support@global-go.com</a>
+                    </div>
+                    <div className="text-blue-100">
+                      <p className="font-semibold">💬 WhatsApp</p>
+                      <a href={shipmentState?.shipment?.whatsappLink || 'https://wa.me/1234567890'} target="_blank" rel="noopener noreferrer" className="hover:text-white transition">Chat with us</a>
+                    </div>
+                    <div className="text-blue-100">
+                      <p className="font-semibold">🕐 Hours</p>
+                      <p>24/7 Available</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Divider */}
+              <div className="border-t border-blue-400 my-8"></div>
+
+              {/* Social Links & Copyright */}
+              <div className="flex flex-col md:flex-row items-center justify-between">
+                <p className="text-blue-100 text-sm">&copy; 2026 Global-Go Logistics. All rights reserved.</p>
+                <div className="flex gap-4 mt-4 md:mt-0">
+                  <a href="#" className="text-blue-100 hover:text-sky-400 transition text-xl">
+                    <i className="fab fa-linkedin"></i>
+                  </a>
+                  <a href="#" className="text-blue-100 hover:text-sky-400 transition text-xl">
+                    <i className="fab fa-twitter"></i>
+                  </a>
+                  <a href="#" className="text-blue-100 hover:text-sky-400 transition text-xl">
+                    <i className="fab fa-facebook"></i>
+                  </a>
+                </div>
+              </div>
+            </div>
           </footer>
         </div>
       );
